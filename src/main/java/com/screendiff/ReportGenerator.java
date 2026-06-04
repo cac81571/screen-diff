@@ -103,9 +103,7 @@ public class ReportGenerator {
                 .report-summary>summary{padding:10px 14px;cursor:pointer;font-weight:bold;font-size:15px;user-select:none;list-style:disclosure-closed inside}
                 .report-summary[open]>summary{border-bottom:1px solid #ddd;list-style:disclosure-open inside}
                 .summary-panel{padding:12px 14px 14px}
-                .summary-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 8px;font-size:14px}
                 .summary-filters{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px;font-size:14px}
-                .summary-hint{margin:0 0 10px;font-size:12px;color:#444}
                 .summary-table{width:100%;border-collapse:collapse;font-size:13px}
                 .summary-table th,.summary-table td{border:1px solid #ccc;padding:6px 8px;text-align:left}
                 .summary-table th{background:#e8eef5;cursor:pointer;user-select:none;white-space:nowrap}
@@ -248,19 +246,54 @@ public class ReportGenerator {
                   var t=parseFloat(row.dataset.text);
                   return t<0?-1:t;
                 }
-                function compareSummaryRows(a,b,mode){
-                  switch(mode){
-                    case 'name-asc':
-                      return (a.dataset.file||'').localeCompare(b.dataset.file||'','ja');
-                    case 'pixel-desc':
-                      return parseFloat(b.dataset.pixel)-parseFloat(a.dataset.pixel);
-                    case 'size-desc':
-                      return parseFloat(b.dataset.size)-parseFloat(a.dataset.size);
-                    case 'text-desc':
-                      return summaryTextSortKey(b)-summaryTextSortKey(a);
+                var summarySortColumn=null;
+                var summarySortAsc=true;
+                function compareSummaryRows(a,b,column,asc){
+                  var cmp=0;
+                  switch(column){
+                    case 'name':
+                      cmp=(a.dataset.file||'').localeCompare(b.dataset.file||'','ja');
+                      break;
+                    case 'pixel':
+                      cmp=parseFloat(a.dataset.pixel)-parseFloat(b.dataset.pixel);
+                      break;
+                    case 'size':
+                      cmp=parseFloat(a.dataset.size)-parseFloat(b.dataset.size);
+                      break;
+                    case 'text':
+                      cmp=summaryTextSortKey(a)-summaryTextSortKey(b);
+                      break;
                     default:
-                      return parseInt(a.dataset.index,10)-parseInt(b.dataset.index,10);
+                      cmp=parseInt(a.dataset.index,10)-parseInt(b.dataset.index,10);
                   }
+                  return asc?cmp:-cmp;
+                }
+                function updateSummarySortHeaders(){
+                  document.querySelectorAll('.summary-table th[data-sort]').forEach(function(th){
+                    var col=th.dataset.sort;
+                    var base=th.dataset.label;
+                    if(col===summarySortColumn){
+                      th.textContent=base+(summarySortAsc?' ▲':' ▼');
+                    }else{
+                      th.textContent=base;
+                    }
+                  });
+                }
+                function toggleSummarySort(column){
+                  if(summarySortColumn===column){
+                    summarySortAsc=!summarySortAsc;
+                  }else{
+                    summarySortColumn=column;
+                    summarySortAsc=(column==='name');
+                  }
+                  var tbody=document.getElementById('summary_body');
+                  var rows=Array.from(tbody.querySelectorAll('tr'));
+                  rows.sort(function(a,b){
+                    return compareSummaryRows(a,b,summarySortColumn,summarySortAsc);
+                  });
+                  rows.forEach(function(r){tbody.appendChild(r);});
+                  updateSummarySortHeaders();
+                  applySummaryFilters();
                 }
                 function summaryRowMatchesFilter(row,pixelVal,sizeVal,textVal){
                   var pixel=parseFloat(row.dataset.pixel);
@@ -278,21 +311,10 @@ public class ReportGenerator {
                   var sizeVal=parseFloat(document.getElementById('filter_size').value);
                   var textVal=parseFloat(document.getElementById('filter_text').value);
                   var rows=document.querySelectorAll('#summary_body tr');
-                  var shown=0;
                   rows.forEach(function(r){
                     var show=summaryRowMatchesFilter(r,pixelVal,sizeVal,textVal);
                     r.style.display=show?'':'none';
-                    if(show){shown++;}
                   });
-                  document.getElementById('summary_count').textContent='表示: '+shown+' / 全 '+rows.length;
-                }
-                function applySummarySort(){
-                  var mode=document.getElementById('sort_order').value;
-                  var tbody=document.getElementById('summary_body');
-                  var rows=Array.from(tbody.querySelectorAll('tr'));
-                  rows.sort(function(a,b){return compareSummaryRows(a,b,mode);});
-                  rows.forEach(function(r){tbody.appendChild(r);});
-                  applySummaryFilters();
                 }
                 function isSummaryFilterSlider(el){
                   return el.id==='filter_pixel'||el.id==='filter_size'||el.id==='filter_text';
@@ -316,6 +338,19 @@ public class ReportGenerator {
                     firstMatch.scrollIntoView({behavior:'smooth',block:'start'});
                   }
                 }
+                function adjustSummaryFilterByKeyboard(el,direction){
+                  var min=parseFloat(el.min);
+                  var max=parseFloat(el.max);
+                  var step=5;
+                  var current=parseFloat(el.value);
+                  var idx=Math.round(current/step);
+                  var maxIdx=Math.round(max/step);
+                  idx=Math.max(0,Math.min(maxIdx,idx+direction));
+                  var val=idx*step;
+                  val=Math.max(min,Math.min(max,val));
+                  el.value=val;
+                  el.dispatchEvent(new Event('input',{bubbles:true}));
+                }
                 function adjustSliderByKeyboard(el,direction,stepOverride){
                   var min=parseFloat(el.min);
                   var max=parseFloat(el.max);
@@ -334,9 +369,9 @@ public class ReportGenerator {
                   if(!el||el.tagName!=='INPUT'||el.type!=='range'){return;}
                   if(e.altKey||e.metaKey){return;}
                   if(isSummaryFilterSlider(el)){
+                    if(e.ctrlKey){return;}
                     e.preventDefault();
-                    var step=e.ctrlKey?5:1;
-                    adjustSliderByKeyboard(el,e.key==='ArrowRight'?1:-1,step);
+                    adjustSummaryFilterByKeyboard(el,e.key==='ArrowRight'?1:-1);
                     return;
                   }
                   if(!e.ctrlKey){return;}
@@ -507,12 +542,11 @@ public class ReportGenerator {
                 <label><input type='radio' name='view_mode' value='single-new' onchange="setViewMode(this.value)"> 新のみ</label>
                 </div>
                 <label class='page-filter'>表示ページ:<input type='text' id='page_filter' placeholder='ファイル名で検索（空で全件）' autocomplete='off' oninput='onPageFilterInput()'><span id='page_filter_count' class='page-filter-count'></span></label>
-                <label><input type='checkbox' onchange="toggleDiffOverlayAll(this.checked)"> 差分を重ねる</label>
-                <label><input type='checkbox' onchange="toggleImgOverlayAll(this.checked)"> 新旧を重ねる</label>
+                <label><input type='checkbox' onchange="toggleDiffOverlayAll(this.checked)"> 差分表示</label>
+                <label><input type='checkbox' onchange="toggleImgOverlayAll(this.checked)"> 新旧表示</label>
                 <label>透明度:<input id='opacity_all' type='range' min='0' max='100' value='50' oninput="setOpacityAll()"><span id='opacity_val_all'>50%</span></label>
                 <label><input id='blink_cb_all' type='checkbox' onchange="toggleBlinkAll(this.checked)"> 交互表示</label>
-                <label>速度:<input id='blink_speed_all' type='range' min='10' max='500' value='100' oninput="setBlinkSpeedAll()"><span id='blink_speed_val_all'>100ms</span></label>
-                <span style='font-size:12px;color:#444'>クリックで最大100%表示（実寸まで・それ以上拡大しない）／拡大中クリックで戻す・ドラッグで移動</span>
+                <label>速度:<input id='blink_speed_all' type='range' min='10' max='500' value='250' oninput="setBlinkSpeedAll()"><span id='blink_speed_val_all'>250ms</span></label>
                 </div>
                 <div class='content'>
                 """);
@@ -703,33 +737,20 @@ public class ReportGenerator {
         sb.append("<details class='report-summary' id='report_summary' open>")
           .append("<summary>差分一覧サマリ（").append(results.size()).append("件）</summary>")
           .append("<div class='summary-panel'>")
-          .append("<p class='summary-hint'>ファイル名をクリックすると「表示ページ」に設定し、該当の画像比較へ移動します。</p>")
-          .append("<div class='summary-toolbar'>")
-          .append("<label>並び替え:<select id='sort_order' onchange='applySummarySort()'>")
-          .append("<option value='original' selected>比較順（既定）</option>")
-          .append("<option value='name-asc'>ファイル名（昇順）</option>")
-          .append("<option value='pixel-desc'>ピクセル差分（降順）</option>")
-          .append("<option value='size-desc'>画像サイズ差分（降順）</option>")
-          .append("<option value='text-desc'>テキスト差分（降順）</option>")
-          .append("</select></label>")
-          .append("<span id='summary_count'>表示: ").append(results.size())
-          .append(" / 全 ").append(results.size()).append("</span>")
-          .append("</div>")
           .append("<div class='summary-filters'>")
           .append("<span>差分フィルタ</span>")
-          .append("<label>ピクセル:<input id='filter_pixel' type='range' min='0' max='100' value='0' step='0.1' ")
+          .append("<label>ピクセル:<input id='filter_pixel' type='range' min='0' max='100' value='0' step='1' ")
           .append("oninput=\"filterSummaryByMetric('filter_pixel','filter_pixel_val')\"><span id='filter_pixel_val'>0%</span>以上</label>")
-          .append("<label>画像サイズ:<input id='filter_size' type='range' min='0' max='100' value='0' step='0.1' ")
+          .append("<label>画像サイズ:<input id='filter_size' type='range' min='0' max='100' value='0' step='1' ")
           .append("oninput=\"filterSummaryByMetric('filter_size','filter_size_val')\"><span id='filter_size_val'>0%</span>以上</label>")
-          .append("<label>テキスト:<input id='filter_text' type='range' min='0' max='100' value='0' step='0.1' ")
+          .append("<label>テキスト:<input id='filter_text' type='range' min='0' max='100' value='0' step='1' ")
           .append("oninput=\"filterSummaryByMetric('filter_text','filter_text_val')\"><span id='filter_text_val'>0%</span>以上</label>")
-          .append("<span style='font-size:12px;color:#444'>フィルタスライダは ← / → で 1% 刻み、Ctrl+← / Ctrl+→ で 5% 刻み</span>")
           .append("</div>")
           .append("<table class='summary-table'><thead><tr>")
-          .append("<th onclick=\"document.getElementById('sort_order').value='name-asc';applySummarySort()\">ファイル名</th>")
-          .append("<th onclick=\"document.getElementById('sort_order').value='pixel-desc';applySummarySort()\">ピクセル差異(%)</th>")
-          .append("<th onclick=\"document.getElementById('sort_order').value='size-desc';applySummarySort()\">画像サイズ差異(%)</th>")
-          .append("<th onclick=\"document.getElementById('sort_order').value='text-desc';applySummarySort()\">テキスト差異(%)</th>")
+          .append("<th data-sort='name' data-label='ファイル名' onclick=\"toggleSummarySort('name')\">ファイル名</th>")
+          .append("<th data-sort='pixel' data-label='ピクセル差異(%)' onclick=\"toggleSummarySort('pixel')\">ピクセル差異(%)</th>")
+          .append("<th data-sort='size' data-label='画像サイズ差異(%)' onclick=\"toggleSummarySort('size')\">画像サイズ差異(%)</th>")
+          .append("<th data-sort='text' data-label='テキスト差異(%)' onclick=\"toggleSummarySort('text')\">テキスト差異(%)</th>")
           .append("</tr></thead><tbody id='summary_body'>");
         int idx = 0;
         for (var r : results) {
