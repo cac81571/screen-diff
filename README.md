@@ -37,7 +37,7 @@ mvn package
 java -jar target/screen-diff-1.0.0.jar
 ```
 
-※ 実行時は依存ライブラリ（FlatLaf、OpenCSV、image-comparison、PDFBox）がクラスパスに必要です。単体 JAR にまとめる場合は `maven-shade-plugin` 等の追加設定が必要です。
+`mvn package` で依存ライブラリを含む実行可能 JAR（fat JAR）が `target/screen-diff-1.0.0.jar` に生成されます。
 
 ## 使い方
 
