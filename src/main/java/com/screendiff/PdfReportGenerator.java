@@ -109,9 +109,9 @@ public final class PdfReportGenerator {
 
             for (var r : results) {
                 BufferedImage oldImg = ImageComparator.loadForReport(
-                        new File(oldDir, r.fileName()), trimMargins, cropHeight);
+                        ImageScanUtil.resolve(oldDir, r.fileName()), trimMargins, cropHeight);
                 BufferedImage newImg = ImageComparator.loadForReport(
-                        new File(newDir, r.fileName()), trimMargins, cropHeight);
+                        ImageScanUtil.resolve(newDir, r.fileName()), trimMargins, cropHeight);
                 String metrics = ReportGenerator.comparisonMetricsLine(r);
                 writeImagePage(doc, font, "旧　" + r.fileName(), metrics, oldImg);
                 writeImagePage(doc, font, "新　" + r.fileName(), metrics, newImg);

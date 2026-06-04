@@ -14,9 +14,18 @@ import java.util.List;
 public class App extends JFrame {
 
     private static final Path HISTORY_FILE = Path.of(System.getProperty("user.home"), ".screendiff_history");
-    private static final Path AI_PROMPT_FILE = Path.of(System.getProperty("user.home"), ".screendiff_ai_prompt");
+    private static final Path AI_PDF_PROMPT_FILE =
+            Path.of(System.getProperty("user.home"), ".screendiff_ai_prompt");
+    private static final Path AI_IMAGE_PROMPT_FILE =
+            Path.of(System.getProperty("user.home"), ".screendiff_ai_image_prompt");
+    /** AI(画像) プロンプト … 比較タブからコピー時に置換 */
+    static final String VAR_OLD_DIR = "${OLD_DIR}";
+    static final String VAR_NEW_DIR = "${NEW_DIR}";
+    static final String VAR_INCLUDE_SUBFOLDERS = "${INCLUDE_SUBFOLDERS}";
+    private static final String LEGACY_OLD_DIR_PLACEHOLDER = "（旧フォルダのフルパスを記載）";
+    private static final String LEGACY_NEW_DIR_PLACEHOLDER = "（新フォルダのフルパスを記載）";
     private static final int MAX_HISTORY = 20;
-    private static final String DEFAULT_AI_PROMPT = """
+    private static final String DEFAULT_AI_PDF_PROMPT = """
             アップロードしたPDF内の旧画面と新画面を比較してください。
             PDFのページは 旧画面1、新画面1、旧画面2、新画面2、・・・ で構成されています。
 
@@ -46,6 +55,43 @@ public class App extends JFrame {
             差異項目が0件の画面は「OK」と1行記載してください。
             """;
 
+    private static final String DEFAULT_AI_IMAGE_PROMPT = """
+            以下のフォルダに格納された画面キャプチャ画像を、旧と新のペアで比較してください。
+
+            【比較フォルダ】
+            旧フォルダ: ${OLD_DIR}
+            新フォルダ: ${NEW_DIR}
+            サブフォルダも比較: ${INCLUDE_SUBFOLDERS}
+
+            旧・新フォルダ内でファイル名（サブフォルダがある場合は相対パスも）が一致する画像をペアとして比較してください。
+            対象拡張子: .png, .jpg, .jpeg, .bmp
+
+            確認ルール：
+
+            1. 表示されているデータ項目の差異
+            2. 項目名（ラベル）の差異
+            3. 値の差異
+            4. 表示件数の差異
+            5. 日付・数値・金額フォーマットの差異
+            6. ステータス表示の差異
+            7. ボタン・リンク・メニューの差異
+            8. レイアウト差異（重要度低）
+
+            結果は以下のCSV形式で出力してください。
+
+            画面名（ファイル名または相対パス）,判定,差異項目,旧の内容,新の内容,コメント
+
+            判定：
+            - NG（重要度：高）
+            - NG（重要度：低）
+            - 要確認
+            - OK（差異がない画面の場合）
+
+            不明な箇所は推測せず「要確認」と記載してください。
+            差異がない項目は記載不要です。
+            差異項目が0件の画面は「OK」と1行記載してください。
+            """;
+
     private final JComboBox<String> oldDirCombo = createEditableCombo();
     private final JComboBox<String> newDirCombo = createEditableCombo();
     private final JComboBox<String> outDirCombo = createEditableCombo();
@@ -62,11 +108,13 @@ public class App extends JFrame {
     private final JRadioButton jpegFormatRadio = new JRadioButton("JPEG変換");
     private final ButtonGroup imageFormatGroup = new ButtonGroup();
     private final JLabel jpegQualityLabel = new JLabel("JPEG品質(%):");
+    private final JCheckBox includeSubfoldersCheck = new JCheckBox("サブフォルダも比較する", false);
     private final JCheckBox trimMarginsCheck = new JCheckBox("四隅の余白削除", false);
     private final JCheckBox cropImageCheck = new JCheckBox("画像を先頭から切り取る", true);
     private final JLabel cropHeightLabel = new JLabel("切り取り高さ(px):");
     private final JTextArea logArea = new JTextArea(10, 50);
-    private final JTextArea aiPromptArea = new JTextArea(20, 60);
+    private final JTextArea aiPdfPromptArea = new JTextArea(20, 60);
+    private final JTextArea aiImagePromptArea = new JTextArea(20, 60);
     private JButton htmlReportButton;
     private JButton pdfReportButton;
     private volatile boolean reportInProgress;
@@ -80,12 +128,13 @@ public class App extends JFrame {
 
         loadHistory();
         linkSettingControls();
-        initAiPromptArea();
+        initAiPromptAreas();
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("比較", createCompareTab());
         tabs.addTab("設定", createSettingsTab());
-        tabs.addTab("AI", createAiTab());
+        tabs.addTab("AI(PDF)", createAiPdfTab());
+        tabs.addTab("AI(画像)", createAiImageTab());
 
         add(tabs, BorderLayout.CENTER);
 
@@ -123,17 +172,27 @@ public class App extends JFrame {
         c.gridx = 2; c.weightx = 0;
         inputPanel.add(createOpenButton(outDirCombo), c);
 
-        htmlReportButton = new JButton("HTML比較レポート作成");
+        c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1;
+        includeSubfoldersCheck.setToolTipText("ON のとき、旧・新フォルダ以下のサブフォルダ内の画像も比較します（相対パスが一致するものをペアにします）");
+        inputPanel.add(includeSubfoldersCheck, c);
+        c.gridwidth = 1;
+
+        htmlReportButton = new JButton("HTMLレポート作成");
         htmlReportButton.addActionListener(e -> createHtmlReport());
-        pdfReportButton = new JButton("PDF比較レポート作成");
+        pdfReportButton = new JButton("PDFレポート作成");
         pdfReportButton.addActionListener(e -> createPdfReport());
-        JButton copyAiPromptBtn = new JButton("PDF検証用AIプロンプトコピー");
-        copyAiPromptBtn.addActionListener(e -> copyAiPromptToClipboard());
+        JButton copyPdfAiPromptBtn = new JButton("PDF比較用AIプロンプト");
+        copyPdfAiPromptBtn.addActionListener(e -> copyPdfAiPromptToClipboard());
+        JButton copyImageAiPromptBtn = new JButton("画像比較用AIプロンプト");
+        copyImageAiPromptBtn.setToolTipText(
+                "AI(画像) タブのプロンプトをコピー（" + VAR_OLD_DIR + " / " + VAR_NEW_DIR + " を比較タブのフォルダパスに置換）");
+        copyImageAiPromptBtn.addActionListener(e -> copyImageAiPromptToClipboard());
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         btnPanel.add(htmlReportButton);
         btnPanel.add(pdfReportButton);
-        btnPanel.add(copyAiPromptBtn);
-        c.gridx = 1; c.gridy = 3;
+        btnPanel.add(copyPdfAiPromptBtn);
+        btnPanel.add(copyImageAiPromptBtn);
+        c.gridx = 1; c.gridy = 4;
         inputPanel.add(btnPanel, c);
 
         panel.add(inputPanel, BorderLayout.NORTH);
@@ -143,46 +202,125 @@ public class App extends JFrame {
         return panel;
     }
 
-    private void initAiPromptArea() {
-        aiPromptArea.setLineWrap(true);
-        aiPromptArea.setWrapStyleWord(true);
-        aiPromptArea.setText(loadAiPromptText());
+    private void initAiPromptAreas() {
+        configurePromptArea(aiPdfPromptArea, loadPromptText(AI_PDF_PROMPT_FILE, DEFAULT_AI_PDF_PROMPT));
+        configurePromptArea(aiImagePromptArea, loadImagePromptText());
     }
 
-    private JPanel createAiTab() {
+    private static void configurePromptArea(JTextArea area, String text) {
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setText(text);
+    }
+
+    private JPanel createAiPromptTab(JTextArea promptArea, String label) {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        panel.add(new JLabel("PDF検証用AIプロンプト:"), BorderLayout.NORTH);
-        panel.add(new JScrollPane(aiPromptArea), BorderLayout.CENTER);
+        panel.add(new JLabel(label), BorderLayout.NORTH);
+        panel.add(new JScrollPane(promptArea), BorderLayout.CENTER);
         return panel;
     }
 
-    private void copyAiPromptToClipboard() {
-        saveAiPrompt();
-        String text = aiPromptArea.getText();
+    private JPanel createAiPdfTab() {
+        return createAiPromptTab(aiPdfPromptArea, "PDF比較用AIプロンプト:");
+    }
+
+    private JPanel createAiImageTab() {
+        JPanel panel = createAiPromptTab(aiImagePromptArea, "画像比較用AIプロンプト:");
+        JLabel hint = new JLabel(
+                "<html>初期テンプレートは <code>" + VAR_OLD_DIR + "</code> / <code>" + VAR_NEW_DIR + "</code> / "
+                        + "<code>" + VAR_INCLUDE_SUBFOLDERS + "</code> を使用します。"
+                        + "比較タブからコピー時に比較タブの設定へ置換します。</html>");
+        hint.setBorder(BorderFactory.createEmptyBorder(8, 10, 0, 10));
+        panel.add(hint, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private void copyPdfAiPromptToClipboard() {
+        saveAiPrompts();
+        copyPromptToClipboard(aiPdfPromptArea.getText(), "PDF比較用AIプロンプト");
+    }
+
+    private void copyImageAiPromptToClipboard() {
+        saveAiPrompts();
+        String oldPath = resolveFolderPathForPrompt(getComboText(oldDirCombo));
+        String newPath = resolveFolderPathForPrompt(getComboText(newDirCombo));
+        if (oldPath == null || newPath == null) {
+            showError("旧フォルダと新フォルダを指定してください。");
+            return;
+        }
+        String text = substituteImagePromptVariables(aiImagePromptArea.getText(), oldPath, newPath);
+        copyPromptToClipboard(text, "画像比較用AIプロンプト");
+    }
+
+    private String substituteImagePromptVariables(String template, String oldPath, String newPath) {
+        return template
+                .replace(VAR_OLD_DIR, oldPath)
+                .replace(VAR_NEW_DIR, newPath)
+                .replace(VAR_INCLUDE_SUBFOLDERS, includeSubfoldersCheck.isSelected() ? "ON" : "OFF");
+    }
+
+    private String loadImagePromptText() {
+        if (!Files.exists(AI_IMAGE_PROMPT_FILE)) {
+            writePromptFile(AI_IMAGE_PROMPT_FILE, DEFAULT_AI_IMAGE_PROMPT);
+            return DEFAULT_AI_IMAGE_PROMPT;
+        }
+        try {
+            String loaded = Files.readString(AI_IMAGE_PROMPT_FILE, StandardCharsets.UTF_8);
+            String normalized = normalizeImagePromptVariables(loaded);
+            if (!normalized.equals(loaded)) {
+                writePromptFile(AI_IMAGE_PROMPT_FILE, normalized);
+            }
+            return normalized;
+        } catch (IOException ignored) {
+        }
+        return DEFAULT_AI_IMAGE_PROMPT;
+    }
+
+    private static String normalizeImagePromptVariables(String text) {
+        if (text == null || text.isBlank()) {
+            return DEFAULT_AI_IMAGE_PROMPT;
+        }
+        return text.replace(LEGACY_OLD_DIR_PLACEHOLDER, VAR_OLD_DIR)
+                .replace(LEGACY_NEW_DIR_PLACEHOLDER, VAR_NEW_DIR);
+    }
+
+    private static String resolveFolderPathForPrompt(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        return Paths.get(path.trim()).toAbsolutePath().normalize().toString();
+    }
+
+    private void copyPromptToClipboard(String text, String label) {
         if (text.isBlank()) {
             showError("プロンプトが空です。");
             return;
         }
         StringSelection selection = new StringSelection(text);
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(selection, selection);
-        log("AIプロンプトをクリップボードにコピーしました");
+        log(label + "をクリップボードにコピーしました");
         JOptionPane.showMessageDialog(this, "クリップボードにコピーしました", "完了", JOptionPane.INFORMATION_MESSAGE);
     }
 
-    private static String loadAiPromptText() {
-        if (Files.exists(AI_PROMPT_FILE)) {
+    private static String loadPromptText(Path file, String defaultText) {
+        if (Files.exists(file)) {
             try {
-                return Files.readString(AI_PROMPT_FILE, StandardCharsets.UTF_8);
+                return Files.readString(file, StandardCharsets.UTF_8);
             } catch (IOException ignored) {
             }
         }
-        return DEFAULT_AI_PROMPT;
+        return defaultText;
     }
 
-    private void saveAiPrompt() {
+    private void saveAiPrompts() {
+        writePromptFile(AI_PDF_PROMPT_FILE, aiPdfPromptArea.getText());
+        writePromptFile(AI_IMAGE_PROMPT_FILE, aiImagePromptArea.getText());
+    }
+
+    private static void writePromptFile(Path file, String text) {
         try {
-            Files.writeString(AI_PROMPT_FILE, aiPromptArea.getText(), StandardCharsets.UTF_8);
+            Files.writeString(file, text, StandardCharsets.UTF_8);
         } catch (IOException ignored) {
         }
     }
@@ -369,8 +507,14 @@ public class App extends JFrame {
             boolean trimMargins) {}
 
     private record ComparisonStart(
-            File oldDir, File newDir, File outDir, File[] oldFiles,
-            int blockSize, int threshold, boolean trimMargins, int cropHeight) {}
+            File oldDir,
+            File newDir,
+            File outDir,
+            List<String> relativeImagePaths,
+            int blockSize,
+            int threshold,
+            boolean trimMargins,
+            int cropHeight) {}
 
     @FunctionalInterface
     private interface ReportTask {
@@ -405,9 +549,18 @@ public class App extends JFrame {
             return null;
         }
 
-        File[] oldFiles = oldDir.listFiles((d, name) -> name.matches("(?i).*\\.(png|jpg|jpeg|bmp)"));
-        if (oldFiles == null || oldFiles.length == 0) {
-            showError("旧フォルダに画像がありません。");
+        boolean includeSubfolders = includeSubfoldersCheck.isSelected();
+        List<String> relativePaths;
+        try {
+            relativePaths = ImageScanUtil.listRelativeImagePaths(oldDir, includeSubfolders);
+        } catch (IOException e) {
+            showError("旧フォルダの画像一覧を取得できません: " + e.getMessage());
+            return null;
+        }
+        if (relativePaths.isEmpty()) {
+            showError(includeSubfolders
+                    ? "旧フォルダ（サブフォルダ含む）に画像がありません。"
+                    : "旧フォルダに画像がありません。");
             return null;
         }
 
@@ -423,40 +576,46 @@ public class App extends JFrame {
         boolean trimMargins = trimMarginsCheck.isSelected();
 
         log("パラメータ: ブロックサイズ=" + blockSize + ", しきい値=" + threshold
+                + ", サブフォルダ=" + (includeSubfolders ? "ON" : "OFF")
                 + ", 余白削除=" + (trimMargins ? "ON" : "OFF")
                 + ", 画像出力=" + (jpegFormatRadio.isSelected() ? "JPEG変換" : "変換なし")
                 + ", 先頭切り取り=" + (cropImageCheck.isSelected() ? "ON" : "OFF")
                 + (cropImageCheck.isSelected() ? ", 高さ=" + cropHeightSpinner.getValue() + "px" : ""));
 
-        return new ComparisonStart(oldDir, newDir, outDir, oldFiles, blockSize, threshold, trimMargins, getCropHeight());
+        return new ComparisonStart(
+                oldDir, newDir, outDir, relativePaths, blockSize, threshold, trimMargins, getCropHeight());
     }
 
     private List<ImageComparator.Result> compareImages(ComparisonStart start) {
         List<ImageComparator.Result> results = new ArrayList<>();
-        for (File oldFile : start.oldFiles()) {
-            File newFile = new File(start.newDir(), oldFile.getName());
-            if (!newFile.exists()) {
-                log(oldFile.getName() + " : 新フォルダに存在しません。スキップ。");
+        for (String relativePath : start.relativeImagePaths()) {
+            File oldFile = ImageScanUtil.resolve(start.oldDir(), relativePath);
+            File newFile = ImageScanUtil.resolve(start.newDir(), relativePath);
+            if (!newFile.isFile()) {
+                log(relativePath + " : 新フォルダに存在しません。スキップ。");
                 continue;
             }
             try {
                 var result = ImageComparator.compare(
                         oldFile,
                         newFile,
+                        start.oldDir(),
+                        start.newDir(),
+                        relativePath,
                         start.blockSize(),
                         start.threshold(),
                         start.trimMargins(),
                         start.cropHeight());
                 results.add(result);
                 String line = result.fileName() + " : 差分 " + String.format("%.2f%%", result.diffPercent());
-                if (result.textDiffPercent() >= 0) {
-                    line += ", テキスト " + String.format("%.1f%%", result.textDiffPercent());
+                if (result.textDiffLines() >= 0) {
+                    line += ", テキスト " + result.textDiffLines() + "行";
                 }
                 log(line);
             } catch (OutOfMemoryError oom) {
-                logError(oldFile.getName() + " : メモリ不足（画像が大きすぎます）。設定でJPEG変換を有効にするか、件数を減らしてください。");
+                logError(relativePath + " : メモリ不足（画像が大きすぎます）。設定でJPEG変換を有効にするか、件数を減らしてください。");
             } catch (Throwable t) {
-                logError(oldFile.getName() + " : 比較エラー", t);
+                logError(relativePath + " : 比較エラー", t);
             }
         }
         if (results.isEmpty()) {
@@ -653,6 +812,7 @@ public class App extends JFrame {
             } else {
                 originalFormatRadio.setSelected(true);
             }
+            includeSubfoldersCheck.setSelected(Boolean.parseBoolean(props.getProperty("includeSubfolders", "false")));
             trimMarginsCheck.setSelected(Boolean.parseBoolean(props.getProperty("trimMargins", "false")));
             if (props.containsKey("cropHeight")) {
                 cropHeightSpinner.setValue(Integer.parseInt(props.getProperty("cropHeight", "1500")));
@@ -686,12 +846,13 @@ public class App extends JFrame {
             props.setProperty("threshold", String.valueOf(thresholdSlider.getValue()));
             props.setProperty("jpegQuality", String.valueOf(jpegQualitySlider.getValue()));
             props.setProperty("imageFormat", jpegFormatRadio.isSelected() ? "jpeg" : "original");
+            props.setProperty("includeSubfolders", String.valueOf(includeSubfoldersCheck.isSelected()));
             props.setProperty("trimMargins", String.valueOf(trimMarginsCheck.isSelected()));
             props.setProperty("cropImage", String.valueOf(cropImageCheck.isSelected()));
             props.setProperty("cropHeight", String.valueOf(cropHeightSpinner.getValue()));
             props.setProperty("pdfMaxSizeMb", String.valueOf(pdfMaxSizeSpinner.getValue()));
             props.store(Files.newBufferedWriter(HISTORY_FILE), "Screen Diff History");
-            saveAiPrompt();
+            saveAiPrompts();
         } catch (IOException ignored) {}
     }
 

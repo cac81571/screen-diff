@@ -19,8 +19,8 @@ public class ImageComparator {
             int newWidth,
             int newHeight,
             double diffPercent,
-            double sizeDiffPercent,
-            double textDiffPercent,
+            long sizeDiffPixels,
+            int textDiffLines,
             BufferedImage diffOverlayImage,
             String aiJudgment,
             BufferedImage reportOldImage,
@@ -32,8 +32,15 @@ public class ImageComparator {
      * @param trimMargins 四隅の白余白を除去してから比較する
      */
     public static Result compare(
-            File oldFile, File newFile, int blockSize, int threshold, boolean trimMargins, int cropHeight)
-            throws IOException {
+            File oldFile,
+            File newFile,
+            File oldRoot,
+            File newRoot,
+            String relativePath,
+            int blockSize,
+            int threshold,
+            boolean trimMargins,
+            int cropHeight) throws IOException {
         BufferedImage img1 = ImageIO.read(oldFile);
         BufferedImage img2 = ImageIO.read(newFile);
         if (img1 == null || img2 == null) {
@@ -97,22 +104,21 @@ public class ImageComparator {
         List<Rectangle> rectangles = comparison.createMask();
         BufferedImage diffOverlay = createDiffOverlay(rectangles, w, h);
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
-        double sizeDiffPercent = sizeDiffPercent(oldW, oldH, newW, newH);
-        TextComparator.TextResult textResult = TextComparator.compare(
-                oldFile.getParentFile(), newFile.getParentFile(), oldFile.getName());
+        long sizeDiffPixels = sizeDiffPixels(oldW, oldH, newW, newH);
+        TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, relativePath);
 
         ImageScaleUtil.dispose(img1);
         ImageScaleUtil.dispose(img2);
 
         return new Result(
-                oldFile.getName(),
+                relativePath,
                 oldW,
                 oldH,
                 newW,
                 newH,
                 diffPercent,
-                sizeDiffPercent,
-                textResult.diffPercent(),
+                sizeDiffPixels,
+                textResult.diffLineCount(),
                 diffOverlay,
                 "未判定",
                 null,
@@ -129,8 +135,8 @@ public class ImageComparator {
                 result.newWidth(),
                 result.newHeight(),
                 result.diffPercent(),
-                result.sizeDiffPercent(),
-                result.textDiffPercent(),
+                result.sizeDiffPixels(),
+                result.textDiffLines(),
                 null,
                 result.aiJudgment(),
                 null,
@@ -175,14 +181,9 @@ public class ImageComparator {
         return overlay;
     }
 
-    /** 幅・高さの相対差（%）の大きい方 */
-    static double sizeDiffPercent(int oldW, int oldH, int newW, int newH) {
-        if (oldW == newW && oldH == newH) {
-            return 0.0;
-        }
-        double wDiff = (oldW == 0 && newW == 0) ? 0 : Math.abs(oldW - newW) * 100.0 / Math.max(oldW, newW);
-        double hDiff = (oldH == 0 && newH == 0) ? 0 : Math.abs(oldH - newH) * 100.0 / Math.max(oldH, newH);
-        return Math.max(wDiff, hDiff);
+    /** 画像面積（幅×高さ）のピクセル数差 */
+    static long sizeDiffPixels(int oldW, int oldH, int newW, int newH) {
+        return Math.abs((long) oldW * oldH - (long) newW * newH);
     }
 
     /**

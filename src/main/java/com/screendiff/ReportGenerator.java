@@ -25,15 +25,15 @@ public class ReportGenerator {
     public static void writeCsv(List<ImageComparator.Result> results, File output) throws IOException {
         try (CSVWriter writer = new CSVWriter(new OutputStreamWriter(new FileOutputStream(output), "UTF-8"))) {
             writer.writeNext(new String[]{
-                    "ファイル名", "ピクセル差異(%)", "画像サイズ差異(%)", "テキスト差異(%)",
+                    "ファイル名", "ピクセル差異(%)", "画像サイズ差異(px)", "テキスト差異(行)",
                     "旧画像幅", "新画像幅", "旧画像高さ", "新画像高さ"
             });
             for (var r : results) {
                 writer.writeNext(new String[]{
                         r.fileName(),
                         String.format("%.2f", r.diffPercent()),
-                        String.format("%.1f", r.sizeDiffPercent()),
-                        formatTextDiffCsv(r.textDiffPercent()),
+                        String.valueOf(r.sizeDiffPixels()),
+                        formatTextDiffCsv(r.textDiffLines()),
                         String.valueOf(r.oldWidth()),
                         String.valueOf(r.newWidth()),
                         String.valueOf(r.oldHeight()),
@@ -199,7 +199,7 @@ public class ReportGenerator {
                   return qi===query.length;
                 }
                 function onPageFilterInput(){
-                  applyPageFilter(false);
+                  applyDiffMetricFilters();
                 }
                 function updatePageFilterValue(fileName){
                   var pf=document.getElementById('page_filter');
@@ -210,26 +210,13 @@ public class ReportGenerator {
                   applyPageFilter(false);
                 }
                 window.setPageFilter=setPageFilter;
-                function revealDiffIndex(index){
-                  var target=String(index);
-                  document.querySelectorAll('.diff-section').forEach(function(s){
-                    s.style.display=s.dataset.index===target?'':'none';
-                  });
-                  var pf=document.getElementById('page_filter');
-                  var countEl=document.getElementById('page_filter_count');
-                  if(countEl&&pf){
-                    var q=normalizePageSearchQuery(pf.value);
-                    countEl.textContent=q?(' 1件'):'';
-                  }
-                }
                 function goToDiff(index,fileName){
+                  var name=(fileName!=null&&String(fileName)!=='')?String(fileName):'';
                   var el=document.getElementById('diff-'+index);
-                  var name=(fileName!=null&&String(fileName)!=='')?String(fileName):(el&&el.dataset.file?el.dataset.file:'');
+                  if(!name&&el&&el.dataset.file){name=el.dataset.file;}
                   updatePageFilterValue(name);
                   resetAllInlineZoom();
-                  revealDiffIndex(index);
-                  el=document.getElementById('diff-'+index);
-                  if(el){el.scrollIntoView({behavior:'smooth',block:'start'});}
+                  applyPageFilter(true);
                 }
                 function showDiff(index){
                   var row=document.querySelector('#summary_body tr[data-index="'+index+'"]');
@@ -251,8 +238,19 @@ public class ReportGenerator {
                 function compareSummaryRows(a,b,column,asc){
                   var cmp=0;
                   switch(column){
+                    case 'no':
+                      cmp=parseInt(a.dataset.index,10)-parseInt(b.dataset.index,10);
+                      break;
                     case 'name':
                       cmp=(a.dataset.file||'').localeCompare(b.dataset.file||'','ja');
+                      break;
+                    case 'oldsize':
+                      cmp=parseInt(a.dataset.oldw,10)-parseInt(b.dataset.oldw,10);
+                      if(cmp===0){cmp=parseInt(a.dataset.oldh,10)-parseInt(b.dataset.oldh,10);}
+                      break;
+                    case 'newsize':
+                      cmp=parseInt(a.dataset.neww,10)-parseInt(b.dataset.neww,10);
+                      if(cmp===0){cmp=parseInt(a.dataset.newh,10)-parseInt(b.dataset.newh,10);}
                       break;
                     case 'pixel':
                       cmp=parseFloat(a.dataset.pixel)-parseFloat(b.dataset.pixel);
@@ -284,7 +282,7 @@ public class ReportGenerator {
                     summarySortAsc=!summarySortAsc;
                   }else{
                     summarySortColumn=column;
-                    summarySortAsc=(column==='name');
+                    summarySortAsc=(column==='name'||column==='no');
                   }
                   var tbody=document.getElementById('summary_body');
                   var rows=Array.from(tbody.querySelectorAll('tr'));
@@ -293,39 +291,28 @@ public class ReportGenerator {
                   });
                   rows.forEach(function(r){tbody.appendChild(r);});
                   updateSummarySortHeaders();
-                  applySummaryFilters();
+                  applyDiffMetricFilters();
                 }
-                function summaryRowMatchesFilter(row,pixelVal,sizeVal,textVal){
-                  var pixel=parseFloat(row.dataset.pixel);
-                  var size=parseFloat(row.dataset.size);
-                  var text=parseFloat(row.dataset.text);
-                  return pixel>=pixelVal&&size>=sizeVal&&(text<0||text>=textVal);
+                function getDiffFilterValues(){
+                  return{
+                    pixel:parseFloat(document.getElementById('filter_pixel').value),
+                    size:parseFloat(document.getElementById('filter_size').value),
+                    text:parseFloat(document.getElementById('filter_text').value)
+                  };
                 }
-                function filterSummaryByMetric(inputId,valId){
-                  var val=document.getElementById(inputId).value;
-                  document.getElementById(valId).textContent=val+'%';
-                  applySummaryFilters();
+                function matchesDiffMetricFilter(el,f){
+                  var pixel=parseFloat(el.dataset.pixel);
+                  var size=parseFloat(el.dataset.size);
+                  var text=parseFloat(el.dataset.text);
+                  return pixel>=f.pixel&&size>=f.size&&(text<0||text>=f.text);
                 }
-                function applySummaryFilters(){
-                  var pixelVal=parseFloat(document.getElementById('filter_pixel').value);
-                  var sizeVal=parseFloat(document.getElementById('filter_size').value);
-                  var textVal=parseFloat(document.getElementById('filter_text').value);
-                  var rows=document.querySelectorAll('#summary_body tr');
-                  rows.forEach(function(r){
-                    var show=summaryRowMatchesFilter(r,pixelVal,sizeVal,textVal);
-                    r.style.display=show?'':'none';
-                  });
-                }
-                function isSummaryFilterSlider(el){
-                  return el.id==='filter_pixel'||el.id==='filter_size'||el.id==='filter_text';
-                }
-                function applyPageFilter(scrollToFirst){
+                function applyDiffSectionsVisibility(f,scrollToFirst){
                   var query=normalizePageSearchQuery(document.getElementById('page_filter').value);
                   var sections=document.querySelectorAll('.diff-section');
                   var shown=0;
                   var firstMatch=null;
                   sections.forEach(function(s){
-                    var show=fuzzyMatchFileName(s.dataset.file,query);
+                    var show=matchesDiffMetricFilter(s,f)&&fuzzyMatchFileName(s.dataset.file,query);
                     s.style.display=show?'':'none';
                     if(show){
                       shown++;
@@ -338,15 +325,43 @@ public class ReportGenerator {
                     firstMatch.scrollIntoView({behavior:'smooth',block:'start'});
                   }
                 }
+                function filterSummaryByMetric(inputId,valId){
+                  var val=document.getElementById(inputId).value;
+                  var suffix=inputId==='filter_text'?'行':(inputId==='filter_size'?'px':'%');
+                  document.getElementById(valId).textContent=val+suffix;
+                  applyDiffMetricFilters();
+                }
+                function applyDiffMetricFilters(){
+                  var f=getDiffFilterValues();
+                  document.querySelectorAll('#summary_body tr').forEach(function(r){
+                    r.style.display=matchesDiffMetricFilter(r,f)?'':'none';
+                  });
+                  applyDiffSectionsVisibility(f,false);
+                }
+                function applyPageFilter(scrollToFirst){
+                  applyDiffMetricFilters();
+                  if(scrollToFirst){
+                    var f=getDiffFilterValues();
+                    applyDiffSectionsVisibility(f,true);
+                  }
+                }
+                function isSummaryFilterSlider(el){
+                  return el.id==='filter_pixel'||el.id==='filter_size'||el.id==='filter_text';
+                }
                 function adjustSummaryFilterByKeyboard(el,direction){
                   var min=parseFloat(el.min);
                   var max=parseFloat(el.max);
-                  var step=5;
-                  var current=parseFloat(el.value);
-                  var idx=Math.round(current/step);
-                  var maxIdx=Math.round(max/step);
-                  idx=Math.max(0,Math.min(maxIdx,idx+direction));
-                  var val=idx*step;
+                  var val;
+                  if(el.id==='filter_text'||el.id==='filter_size'){
+                    val=parseFloat(el.value)+direction;
+                  }else{
+                    var step=5;
+                    var current=parseFloat(el.value);
+                    var idx=Math.round(current/step);
+                    var maxIdx=Math.round(max/step);
+                    idx=Math.max(0,Math.min(maxIdx,idx+direction));
+                    val=idx*step;
+                  }
                   val=Math.max(min,Math.min(max,val));
                   el.value=val;
                   el.dispatchEvent(new Event('input',{bubbles:true}));
@@ -573,7 +588,7 @@ public class ReportGenerator {
               .append("' data-index='").append(idx)
               .append("' data-file='").append(escapeHtmlAttr(r.fileName()))
               .append("' data-pixel='").append(String.format("%.2f", r.diffPercent()))
-              .append("' data-size='").append(String.format("%.1f", r.sizeDiffPercent()))
+              .append("' data-size='").append(r.sizeDiffPixels())
               .append("' data-text='").append(formatTextDiffData(r)).append("'>")
               .append("<h2>").append(formatSectionTitle(r)).append("</h2>")
               .append("<div class='pair'>")
@@ -606,7 +621,7 @@ public class ReportGenerator {
                 totalImages=%d;
                 initImageZoom();
                 initHeaderOffset();
-                applySummaryFilters();
+                applyDiffMetricFilters();
                 scrollToDiffFromHash();
                 window.addEventListener('hashchange',scrollToDiffFromHash);
                 </script>
@@ -666,10 +681,10 @@ public class ReportGenerator {
         String diffFile = String.format("%03d_diff.png", idx);
 
         writeAssetFromSource(
-                new File(oldDir, r.fileName()), assetsDir.resolve(oldFile),
+                ImageScanUtil.resolve(oldDir, r.fileName()), assetsDir.resolve(oldFile),
                 format, jpegQuality, cropHeight, trimMargins, canvasW, canvasH);
         writeAssetFromSource(
-                new File(newDir, r.fileName()), assetsDir.resolve(newFile),
+                ImageScanUtil.resolve(newDir, r.fileName()), assetsDir.resolve(newFile),
                 format, jpegQuality, cropHeight, trimMargins, canvasW, canvasH);
         writeAssetDiffOverlay(r, assetsDir.resolve(diffFile));
 
@@ -734,6 +749,8 @@ public class ReportGenerator {
     }
 
     private static void appendHtmlSummaryAccordion(StringBuilder sb, List<ImageComparator.Result> results) {
+        int maxTextDiff = maxTextDiffLines(results);
+        long maxSizeDiff = maxSizeDiffPixels(results);
         sb.append("<details class='report-summary' id='report_summary' open>")
           .append("<summary>差分一覧サマリ（").append(results.size()).append("件）</summary>")
           .append("<div class='summary-panel'>")
@@ -741,28 +758,40 @@ public class ReportGenerator {
           .append("<span>差分フィルタ</span>")
           .append("<label>ピクセル:<input id='filter_pixel' type='range' min='0' max='100' value='0' step='1' ")
           .append("oninput=\"filterSummaryByMetric('filter_pixel','filter_pixel_val')\"><span id='filter_pixel_val'>0%</span>以上</label>")
-          .append("<label>画像サイズ:<input id='filter_size' type='range' min='0' max='100' value='0' step='1' ")
-          .append("oninput=\"filterSummaryByMetric('filter_size','filter_size_val')\"><span id='filter_size_val'>0%</span>以上</label>")
-          .append("<label>テキスト:<input id='filter_text' type='range' min='0' max='100' value='0' step='1' ")
-          .append("oninput=\"filterSummaryByMetric('filter_text','filter_text_val')\"><span id='filter_text_val'>0%</span>以上</label>")
+          .append("<label>画像サイズ:<input id='filter_size' type='range' min='0' max='")
+          .append(maxSizeDiff).append("' value='0' step='1' ")
+          .append("oninput=\"filterSummaryByMetric('filter_size','filter_size_val')\"><span id='filter_size_val'>0px</span>以上</label>")
+          .append("<label>テキスト:<input id='filter_text' type='range' min='0' max='")
+          .append(maxTextDiff).append("' value='0' step='1' ")
+          .append("oninput=\"filterSummaryByMetric('filter_text','filter_text_val')\"><span id='filter_text_val'>0行</span>以上</label>")
           .append("</div>")
           .append("<table class='summary-table'><thead><tr>")
+          .append("<th data-sort='no' data-label='No.' onclick=\"toggleSummarySort('no')\">No.</th>")
           .append("<th data-sort='name' data-label='ファイル名' onclick=\"toggleSummarySort('name')\">ファイル名</th>")
+          .append("<th data-sort='oldsize' data-label='旧（横×縦）' onclick=\"toggleSummarySort('oldsize')\">旧（横×縦）</th>")
+          .append("<th data-sort='newsize' data-label='新（横×縦）' onclick=\"toggleSummarySort('newsize')\">新（横×縦）</th>")
           .append("<th data-sort='pixel' data-label='ピクセル差異(%)' onclick=\"toggleSummarySort('pixel')\">ピクセル差異(%)</th>")
-          .append("<th data-sort='size' data-label='画像サイズ差異(%)' onclick=\"toggleSummarySort('size')\">画像サイズ差異(%)</th>")
-          .append("<th data-sort='text' data-label='テキスト差異(%)' onclick=\"toggleSummarySort('text')\">テキスト差異(%)</th>")
+          .append("<th data-sort='size' data-label='画像サイズ差異(px)' onclick=\"toggleSummarySort('size')\">画像サイズ差異(px)</th>")
+          .append("<th data-sort='text' data-label='テキスト差異(行)' onclick=\"toggleSummarySort('text')\">テキスト差異(行)</th>")
           .append("</tr></thead><tbody id='summary_body'>");
         int idx = 0;
         for (var r : results) {
             sb.append("<tr data-index='").append(idx)
               .append("' data-file='").append(escapeHtmlAttr(r.fileName()))
+              .append("' data-oldw='").append(r.oldWidth())
+              .append("' data-oldh='").append(r.oldHeight())
+              .append("' data-neww='").append(r.newWidth())
+              .append("' data-newh='").append(r.newHeight())
               .append("' data-pixel='").append(String.format("%.2f", r.diffPercent()))
-              .append("' data-size='").append(String.format("%.1f", r.sizeDiffPercent()))
+              .append("' data-size='").append(r.sizeDiffPixels())
               .append("' data-text='").append(formatTextDiffData(r))
-              .append("'><td><a href='#diff-").append(idx).append("' onclick='showDiff(").append(idx)
+              .append("'><td class='num'>").append(idx + 1).append("</td>")
+              .append("<td><a href='#diff-").append(idx).append("' onclick='showDiff(").append(idx)
               .append(");return false'>").append(escapeHtml(r.fileName())).append("</a></td>")
+              .append("<td class='num'>").append(formatImageDimensions(r.oldWidth(), r.oldHeight())).append("</td>")
+              .append("<td class='num'>").append(formatImageDimensions(r.newWidth(), r.newHeight())).append("</td>")
               .append("<td class='num'>").append(String.format("%.2f", r.diffPercent())).append("</td>")
-              .append("<td class='num'>").append(String.format("%.1f", r.sizeDiffPercent())).append("</td>")
+              .append("<td class='num'>").append(r.sizeDiffPixels()).append("</td>")
               .append("<td class='num'>").append(escapeHtml(formatTextDiffLabel(r))).append("</td>")
               .append("</tr>");
             idx++;
@@ -776,7 +805,8 @@ public class ReportGenerator {
                 TextComparator.loadTextDiffContent(oldDir, newDir, r.fileName());
         sb.append("<details class='text-diff'>");
         if (content.available()) {
-            sb.append("<summary>テキスト差分（").append(String.format("%.1f%%", content.diffPercent())).append("）</summary>");
+            int displayRows = TextComparator.countDiffDisplayRows(content.rows());
+            sb.append("<summary>テキスト差分（差分行数 ").append(displayRows).append("行）</summary>");
             sb.append("<div class='text-diff-body'>");
             if (content.rows().isEmpty()) {
                 sb.append("<p class='text-diff-empty'>(空)</p>");
@@ -797,17 +827,15 @@ public class ReportGenerator {
     /** HTML 用: 一致行は省略し、差分行のみ表示する（ブロック間は省略サマリ行を挿入） */
     private static void appendHtmlTextDiffTable(StringBuilder sb, List<TextComparator.LineDiffRow> rows) {
         int totalLines = rows.size();
-        long diffLineCount = rows.stream()
-                .filter(r -> r.kind() != TextComparator.LineKind.SAME)
-                .count();
-        if (diffLineCount == 0) {
+        int diffDisplayRows = TextComparator.countDiffDisplayRows(rows);
+        if (diffDisplayRows == 0) {
             sb.append("<p class='text-diff-empty'>テキストに差分はありません（全 ")
               .append(totalLines)
               .append(" 行一致）</p>");
             return;
         }
-        sb.append("<p class='text-diff-stats'>差分 ")
-          .append(diffLineCount)
+        sb.append("<p class='text-diff-stats'>差分行数 ")
+          .append(diffDisplayRows)
           .append(" 行 / 全 ")
           .append(totalLines)
           .append(" 行（一致行は省略）</p>");
@@ -873,7 +901,7 @@ public class ReportGenerator {
     private static String formatSectionTitle(ImageComparator.Result r) {
         return r.fileName()
                 + "　比較差異　ピクセル：" + String.format("%.2f%%", r.diffPercent())
-                + "　画像サイズ：" + String.format("%.1f%%", r.sizeDiffPercent())
+                + "　画像サイズ：" + r.sizeDiffPixels() + "px"
                 + "　テキスト：" + formatTextDiffLabel(r);
     }
 
@@ -904,21 +932,37 @@ public class ReportGenerator {
     /** PDF 等で比較差異行として使う（ファイル名なし） */
     static String comparisonMetricsLine(ImageComparator.Result r) {
         return "比較差異　ピクセル：" + String.format("%.2f%%", r.diffPercent())
-                + "　画像サイズ：" + String.format("%.1f%%", r.sizeDiffPercent())
+                + "　画像サイズ：" + r.sizeDiffPixels() + "px"
                 + "　テキスト：" + formatTextDiffLabel(r);
     }
 
     /** テキスト .txt が無い場合は -1（フィルタ対象外） */
     private static String formatTextDiffData(ImageComparator.Result r) {
-        return r.textDiffPercent() < 0 ? "-1" : String.format("%.1f", r.textDiffPercent());
+        return r.textDiffLines() < 0 ? "-1" : String.valueOf(r.textDiffLines());
     }
 
     private static String formatTextDiffLabel(ImageComparator.Result r) {
-        return r.textDiffPercent() < 0 ? "—" : String.format("%.1f%%", r.textDiffPercent());
+        return r.textDiffLines() < 0 ? "—" : r.textDiffLines() + "行";
     }
 
-    private static String formatTextDiffCsv(double textDiffPercent) {
-        return textDiffPercent < 0 ? "" : String.format("%.1f", textDiffPercent);
+    private static String formatTextDiffCsv(int textDiffLines) {
+        return textDiffLines < 0 ? "" : String.valueOf(textDiffLines);
+    }
+
+    private static int maxTextDiffLines(List<ImageComparator.Result> results) {
+        return results.stream()
+                .mapToInt(r -> r.textDiffLines() < 0 ? 0 : r.textDiffLines())
+                .max()
+                .orElse(0);
+    }
+
+    private static long maxSizeDiffPixels(List<ImageComparator.Result> results) {
+        return results.stream().mapToLong(ImageComparator.Result::sizeDiffPixels).max().orElse(0L);
+    }
+
+    /** サマリ表用 … 横×縦（幅×高さ） */
+    private static String formatImageDimensions(int width, int height) {
+        return width + "×" + height;
     }
 
 }

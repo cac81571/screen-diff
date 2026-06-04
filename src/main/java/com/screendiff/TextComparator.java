@@ -11,7 +11,7 @@ import java.util.List;
 /** 画像と同じベース名の .txt を比較する。 */
 public final class TextComparator {
 
-    public record TextResult(double diffPercent, boolean available) {}
+    public record TextResult(int diffLineCount, boolean available) {}
 
     public enum LineKind {
         SAME, REMOVED, ADDED, CHANGED
@@ -19,7 +19,7 @@ public final class TextComparator {
 
     public record LineDiffRow(LineKind kind, String oldLine, String newLine) {}
 
-    public record TextDiffContent(boolean available, double diffPercent, List<LineDiffRow> rows) {
+    public record TextDiffContent(boolean available, int diffLineCount, List<LineDiffRow> rows) {
         public static TextDiffContent unavailable() {
             return new TextDiffContent(false, -1, List.of());
         }
@@ -35,8 +35,7 @@ public final class TextComparator {
         }
         String oldNorm = normalize(Files.readString(oldTxt, StandardCharsets.UTF_8));
         String newNorm = normalize(Files.readString(newTxt, StandardCharsets.UTF_8));
-        double similarity = similarityPercent(oldNorm, newNorm);
-        return new TextResult(Math.max(0.0, 100.0 - similarity), true);
+        return new TextResult(countDiffDisplayRows(diffLines(oldNorm, newNorm)), true);
     }
 
     public static TextDiffContent loadTextDiffContent(File oldDir, File newDir, String imageFileName)
@@ -48,9 +47,19 @@ public final class TextComparator {
         }
         String oldNorm = normalize(Files.readString(oldTxt, StandardCharsets.UTF_8));
         String newNorm = normalize(Files.readString(newTxt, StandardCharsets.UTF_8));
-        double similarity = similarityPercent(oldNorm, newNorm);
-        double diffPercent = Math.max(0.0, 100.0 - similarity);
-        return new TextDiffContent(true, diffPercent, diffLines(oldNorm, newNorm));
+        List<LineDiffRow> rows = diffLines(oldNorm, newNorm);
+        return new TextDiffContent(true, countDiffDisplayRows(rows), rows);
+    }
+
+    /** 差分行数（削除・追加・変更は各1行。HTML 表示・サマリ・フィルタで共通） */
+    static int countDiffDisplayRows(List<LineDiffRow> rows) {
+        int count = 0;
+        for (LineDiffRow row : rows) {
+            if (row.kind() != LineKind.SAME) {
+                count++;
+            }
+        }
+        return count;
     }
 
     static List<LineDiffRow> diffLines(String oldText, String newText) {
