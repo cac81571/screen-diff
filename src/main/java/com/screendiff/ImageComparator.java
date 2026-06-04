@@ -31,7 +31,8 @@ public class ImageComparator {
      * @param threshold ピクセル許容差 (0-255)
      * @param trimMargins 四隅の白余白を除去してから比較する
      */
-    public static Result compare(File oldFile, File newFile, int blockSize, int threshold, boolean trimMargins)
+    public static Result compare(
+            File oldFile, File newFile, int blockSize, int threshold, boolean trimMargins, int cropHeight)
             throws IOException {
         BufferedImage img1 = ImageIO.read(oldFile);
         BufferedImage img2 = ImageIO.read(newFile);
@@ -63,6 +64,21 @@ public class ImageComparator {
             oldW = img1.getWidth();
             oldH = img1.getHeight();
             newW = img2.getWidth();
+            newH = img2.getHeight();
+        }
+
+        if (cropHeight > 0) {
+            BufferedImage cropped1 = ImageCropper.cropFromTop(img1, cropHeight);
+            BufferedImage cropped2 = ImageCropper.cropFromTop(img2, cropHeight);
+            if (cropped1 != img1) {
+                ImageScaleUtil.dispose(img1);
+            }
+            if (cropped2 != img2) {
+                ImageScaleUtil.dispose(img2);
+            }
+            img1 = cropped1;
+            img2 = cropped2;
+            oldH = img1.getHeight();
             newH = img2.getHeight();
         }
 
@@ -172,8 +188,8 @@ public class ImageComparator {
     /**
      * レポート用に比較時と同じキャンバスへ配置する（旧・新・差分オーバーレイのピクセル位置を一致させる）。
      */
-    static BufferedImage loadForReportCanvas(File file, boolean trimMargins, int canvasW, int canvasH)
-            throws IOException {
+    static BufferedImage loadForReportCanvas(
+            File file, boolean trimMargins, int cropHeight, int canvasW, int canvasH) throws IOException {
         BufferedImage img = ImageIO.read(file);
         if (img == null) {
             throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
@@ -185,8 +201,37 @@ public class ImageComparator {
             }
             img = trimmed;
         }
+        if (cropHeight > 0) {
+            BufferedImage cropped = ImageCropper.cropFromTop(img, cropHeight);
+            if (cropped != img) {
+                ImageScaleUtil.dispose(img);
+            }
+            img = cropped;
+        }
         img = ImageScaleUtil.limitForComparison(img);
         return padToCanvas(img, canvasW, canvasH);
+    }
+
+    static BufferedImage loadForReport(File file, boolean trimMargins, int cropHeight) throws IOException {
+        BufferedImage img = ImageIO.read(file);
+        if (img == null) {
+            throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
+        }
+        if (trimMargins) {
+            BufferedImage trimmed = ImageMarginTrimmer.trim(img);
+            if (trimmed != img) {
+                ImageScaleUtil.dispose(img);
+            }
+            img = trimmed;
+        }
+        if (cropHeight > 0) {
+            BufferedImage cropped = ImageCropper.cropFromTop(img, cropHeight);
+            if (cropped != img) {
+                ImageScaleUtil.dispose(img);
+            }
+            img = cropped;
+        }
+        return ImageScaleUtil.limitForComparison(img);
     }
 
     static BufferedImage padToCanvas(BufferedImage img, int canvasW, int canvasH) {

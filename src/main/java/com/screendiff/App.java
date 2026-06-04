@@ -55,8 +55,7 @@ public class App extends JFrame {
     private final JSpinner blockSizeSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 20, 1));
     private final JSpinner thresholdSpinner = new JSpinner(new SpinnerNumberModel(10, 0, 255, 1));
     private final JSpinner jpegQualitySpinner = new JSpinner(new SpinnerNumberModel(50, 10, 100, 5));
-    private final JSpinner splitHeadHeightSpinner = new JSpinner(new SpinnerNumberModel(1500, null, null, 100));
-    private final JSpinner splitTailHeightSpinner = new JSpinner(new SpinnerNumberModel(1500, null, null, 100));
+    private final JSpinner cropHeightSpinner = new JSpinner(new SpinnerNumberModel(1500, null, null, 100));
     private final JSpinner pdfMaxSizeSpinner = new JSpinner(new SpinnerNumberModel(10, 0, 500, 1));
     private final JLabel pdfMaxSizeLabel = new JLabel("PDF上限サイズ(MB):");
     private final JRadioButton originalFormatRadio = new JRadioButton("変換なし", true);
@@ -64,9 +63,8 @@ public class App extends JFrame {
     private final ButtonGroup imageFormatGroup = new ButtonGroup();
     private final JLabel jpegQualityLabel = new JLabel("JPEG品質(%):");
     private final JCheckBox trimMarginsCheck = new JCheckBox("四隅の余白削除", false);
-    private final JCheckBox splitDisplayCheck = new JCheckBox("画像2分割表示", true);
-    private final JLabel splitHeadHeightLabel = new JLabel("先頭表示高さ(px):");
-    private final JLabel splitTailHeightLabel = new JLabel("末尾表示高さ(px):");
+    private final JCheckBox cropImageCheck = new JCheckBox("画像を先頭から切り取る", true);
+    private final JLabel cropHeightLabel = new JLabel("切り取り高さ(px):");
     private final JTextArea logArea = new JTextArea(10, 50);
     private final JTextArea aiPromptArea = new JTextArea(20, 60);
     private JButton htmlReportButton;
@@ -246,21 +244,17 @@ public class App extends JFrame {
         updateJpegQualityEnabled();
 
         c.gridx = 0; c.gridy = 5; c.gridwidth = 3; c.weightx = 1;
-        splitDisplayCheck.setToolTipText("ON のとき、縦長画像を先頭と末尾の2区間に分けて表示します");
-        splitHeadHeightLabel.setToolTipText("2分割表示 ON 時、表示する先頭区間の高さ");
-        splitTailHeightLabel.setToolTipText("2分割表示 ON 時、表示する末尾区間の高さ");
-        splitHeadHeightSpinner.setToolTipText(splitHeadHeightLabel.getToolTipText());
-        splitTailHeightSpinner.setToolTipText(splitTailHeightLabel.getToolTipText());
-        JPanel splitPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
-        splitPanel.add(splitDisplayCheck);
-        splitPanel.add(splitHeadHeightLabel);
-        splitPanel.add(splitHeadHeightSpinner);
-        splitPanel.add(splitTailHeightLabel);
-        splitPanel.add(splitTailHeightSpinner);
-        panel.add(splitPanel, c);
+        cropImageCheck.setToolTipText("ON のとき、比較・レポート用に画像の先頭から指定高さを切り取ります");
+        cropHeightLabel.setToolTipText("切り取り ON 時、先頭から残す高さ（px）");
+        cropHeightSpinner.setToolTipText(cropHeightLabel.getToolTipText());
+        JPanel cropPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        cropPanel.add(cropImageCheck);
+        cropPanel.add(cropHeightLabel);
+        cropPanel.add(cropHeightSpinner);
+        panel.add(cropPanel, c);
         c.gridwidth = 1;
-        splitDisplayCheck.addItemListener(e -> updateSplitDisplayEnabled());
-        updateSplitDisplayEnabled();
+        cropImageCheck.addItemListener(e -> updateCropEnabled());
+        updateCropEnabled();
 
         c.gridx = 0; c.gridy = 6; c.gridwidth = 3; c.weightx = 1; c.weighty = 0; c.fill = GridBagConstraints.HORIZONTAL;
         pdfMaxSizeLabel.setToolTipText("PDF がこのサイズを超える場合、report-01.pdf, report-02.pdf … に分割（0=分割しない）");
@@ -300,20 +294,14 @@ public class App extends JFrame {
         jpegQualitySpinner.setEnabled(jpeg);
     }
 
-    private void updateSplitDisplayEnabled() {
-        boolean enabled = splitDisplayCheck.isSelected();
-        splitHeadHeightLabel.setEnabled(enabled);
-        splitHeadHeightSpinner.setEnabled(enabled);
-        splitTailHeightLabel.setEnabled(enabled);
-        splitTailHeightSpinner.setEnabled(enabled);
+    private void updateCropEnabled() {
+        boolean enabled = cropImageCheck.isSelected();
+        cropHeightLabel.setEnabled(enabled);
+        cropHeightSpinner.setEnabled(enabled);
     }
 
-    private int getSplitHeadHeight() {
-        return splitDisplayCheck.isSelected() ? (int) splitHeadHeightSpinner.getValue() : 0;
-    }
-
-    private int getSplitTailHeight() {
-        return splitDisplayCheck.isSelected() ? (int) splitTailHeightSpinner.getValue() : 0;
+    private int getCropHeight() {
+        return cropImageCheck.isSelected() ? (int) cropHeightSpinner.getValue() : 0;
     }
 
     private long getPdfMaxSizeBytes() {
@@ -382,7 +370,7 @@ public class App extends JFrame {
 
     private record ComparisonStart(
             File oldDir, File newDir, File outDir, File[] oldFiles,
-            int blockSize, int threshold, boolean trimMargins) {}
+            int blockSize, int threshold, boolean trimMargins, int cropHeight) {}
 
     @FunctionalInterface
     private interface ReportTask {
@@ -437,12 +425,10 @@ public class App extends JFrame {
         log("パラメータ: ブロックサイズ=" + blockSize + ", しきい値=" + threshold
                 + ", 余白削除=" + (trimMargins ? "ON" : "OFF")
                 + ", 画像出力=" + (jpegFormatRadio.isSelected() ? "JPEG変換" : "変換なし")
-                + ", 画像2分割=" + (splitDisplayCheck.isSelected() ? "ON" : "OFF")
-                + (splitDisplayCheck.isSelected()
-                        ? ", 先頭=" + splitHeadHeightSpinner.getValue() + "px, 末尾=" + splitTailHeightSpinner.getValue() + "px"
-                        : ""));
+                + ", 先頭切り取り=" + (cropImageCheck.isSelected() ? "ON" : "OFF")
+                + (cropImageCheck.isSelected() ? ", 高さ=" + cropHeightSpinner.getValue() + "px" : ""));
 
-        return new ComparisonStart(oldDir, newDir, outDir, oldFiles, blockSize, threshold, trimMargins);
+        return new ComparisonStart(oldDir, newDir, outDir, oldFiles, blockSize, threshold, trimMargins, getCropHeight());
     }
 
     private List<ImageComparator.Result> compareImages(ComparisonStart start) {
@@ -455,7 +441,12 @@ public class App extends JFrame {
             }
             try {
                 var result = ImageComparator.compare(
-                        oldFile, newFile, start.blockSize(), start.threshold(), start.trimMargins());
+                        oldFile,
+                        newFile,
+                        start.blockSize(),
+                        start.threshold(),
+                        start.trimMargins(),
+                        start.cropHeight());
                 results.add(result);
                 String line = result.fileName() + " : 差分 " + String.format("%.2f%%", result.diffPercent());
                 if (result.textDiffPercent() >= 0) {
@@ -564,8 +555,7 @@ public class App extends JFrame {
     private void createHtmlReport() {
         ReportGenerator.ImageFormat imageFormat = getImageFormat();
         float jpegQuality = jpegQualitySlider.getValue() / 100.0f;
-        int splitHeadHeight = getSplitHeadHeight();
-        int splitTailHeight = getSplitTailHeight();
+        int cropHeight = getCropHeight();
         runReportTask(ctx -> {
             writeCsvReport(ctx);
             File htmlFile = new File(ctx.outDir(), "report.html");
@@ -576,8 +566,7 @@ public class App extends JFrame {
                     htmlFile,
                     imageFormat,
                     jpegQuality,
-                    splitHeadHeight,
-                    splitTailHeight,
+                    cropHeight,
                     ctx.trimMargins());
             log("HTML出力: " + htmlFile.getAbsolutePath());
             return "HTMLレポート出力完了";
@@ -585,8 +574,7 @@ public class App extends JFrame {
     }
 
     private void createPdfReport() {
-        int splitHeadHeight = getSplitHeadHeight();
-        int splitTailHeight = getSplitTailHeight();
+        int cropHeight = getCropHeight();
         long maxSizeBytes = getPdfMaxSizeBytes();
         runReportTask(ctx -> {
             writeCsvReport(ctx);
@@ -596,8 +584,8 @@ public class App extends JFrame {
                     ctx.oldDir(),
                     ctx.newDir(),
                     pdfFile,
-                    splitHeadHeight,
-                    splitTailHeight,
+                    cropHeight,
+                    ctx.trimMargins(),
                     maxSizeBytes);
             for (File file : pdfFiles) {
                 String size = PdfReportGenerator.formatFileSize(file.length());
@@ -666,22 +654,23 @@ public class App extends JFrame {
                 originalFormatRadio.setSelected(true);
             }
             trimMarginsCheck.setSelected(Boolean.parseBoolean(props.getProperty("trimMargins", "false")));
-            if (props.containsKey("splitHeadHeight") && props.containsKey("splitTailHeight")) {
-                splitHeadHeightSpinner.setValue(Integer.parseInt(props.getProperty("splitHeadHeight", "1500")));
-                splitTailHeightSpinner.setValue(Integer.parseInt(props.getProperty("splitTailHeight", "1500")));
+            if (props.containsKey("cropHeight")) {
+                cropHeightSpinner.setValue(Integer.parseInt(props.getProperty("cropHeight", "1500")));
+            } else if (props.containsKey("splitHeadHeight")) {
+                cropHeightSpinner.setValue(Integer.parseInt(props.getProperty("splitHeadHeight", "1500")));
             } else {
                 int legacyMaxH = Integer.parseInt(props.getProperty("maxDisplayHeight", "3000"));
-                int half = legacyMaxH > 0 ? legacyMaxH / 2 : 1500;
-                splitHeadHeightSpinner.setValue(half);
-                splitTailHeightSpinner.setValue(half);
+                cropHeightSpinner.setValue(legacyMaxH > 0 ? legacyMaxH / 2 : 1500);
             }
-            if (props.containsKey("splitDisplay")) {
-                splitDisplayCheck.setSelected(Boolean.parseBoolean(props.getProperty("splitDisplay")));
+            if (props.containsKey("cropImage")) {
+                cropImageCheck.setSelected(Boolean.parseBoolean(props.getProperty("cropImage")));
+            } else if (props.containsKey("splitDisplay")) {
+                cropImageCheck.setSelected(Boolean.parseBoolean(props.getProperty("splitDisplay")));
             } else {
                 int legacyMaxH = Integer.parseInt(props.getProperty("maxDisplayHeight", "3000"));
-                splitDisplayCheck.setSelected(legacyMaxH > 0);
+                cropImageCheck.setSelected(legacyMaxH > 0);
             }
-            updateSplitDisplayEnabled();
+            updateCropEnabled();
             updateJpegQualityEnabled();
             pdfMaxSizeSpinner.setValue(Integer.parseInt(props.getProperty("pdfMaxSizeMb", "10")));
         } catch (IOException ignored) {}
@@ -698,9 +687,8 @@ public class App extends JFrame {
             props.setProperty("jpegQuality", String.valueOf(jpegQualitySlider.getValue()));
             props.setProperty("imageFormat", jpegFormatRadio.isSelected() ? "jpeg" : "original");
             props.setProperty("trimMargins", String.valueOf(trimMarginsCheck.isSelected()));
-            props.setProperty("splitDisplay", String.valueOf(splitDisplayCheck.isSelected()));
-            props.setProperty("splitHeadHeight", String.valueOf(splitHeadHeightSpinner.getValue()));
-            props.setProperty("splitTailHeight", String.valueOf(splitTailHeightSpinner.getValue()));
+            props.setProperty("cropImage", String.valueOf(cropImageCheck.isSelected()));
+            props.setProperty("cropHeight", String.valueOf(cropHeightSpinner.getValue()));
             props.setProperty("pdfMaxSizeMb", String.valueOf(pdfMaxSizeSpinner.getValue()));
             props.store(Files.newBufferedWriter(HISTORY_FILE), "Screen Diff History");
             saveAiPrompt();

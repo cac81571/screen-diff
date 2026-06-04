@@ -50,8 +50,7 @@ public class ReportGenerator {
             File output,
             ImageFormat imageFormat,
             float jpegQuality,
-            int splitHeadHeight,
-            int splitTailHeight,
+            int cropHeight,
             boolean trimMargins) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("""
@@ -527,7 +526,7 @@ public class ReportGenerator {
             ImageComparator.Result r = resultList.get(i);
             HtmlAssetUrls urls = writeHtmlImageAssets(
                     idx, r, oldDir, newDir, assetsDir, imageFormat, jpegQuality,
-                    splitHeadHeight, splitTailHeight, trimMargins);
+                    cropHeight, trimMargins);
             resultList.set(i, ImageComparator.releaseImages(r));
             r = resultList.get(i);
 
@@ -618,8 +617,7 @@ public class ReportGenerator {
             Path assetsDir,
             ImageFormat format,
             float jpegQuality,
-            int splitHeadHeight,
-            int splitTailHeight,
+            int cropHeight,
             boolean trimMargins) throws IOException {
         BufferedImage overlay = r.diffOverlayImage();
         if (overlay == null) {
@@ -635,11 +633,11 @@ public class ReportGenerator {
 
         writeAssetFromSource(
                 new File(oldDir, r.fileName()), assetsDir.resolve(oldFile),
-                format, jpegQuality, splitHeadHeight, splitTailHeight, trimMargins, canvasW, canvasH);
+                format, jpegQuality, cropHeight, trimMargins, canvasW, canvasH);
         writeAssetFromSource(
                 new File(newDir, r.fileName()), assetsDir.resolve(newFile),
-                format, jpegQuality, splitHeadHeight, splitTailHeight, trimMargins, canvasW, canvasH);
-        writeAssetDiffOverlay(r, assetsDir.resolve(diffFile), splitHeadHeight, splitTailHeight);
+                format, jpegQuality, cropHeight, trimMargins, canvasW, canvasH);
+        writeAssetDiffOverlay(r, assetsDir.resolve(diffFile));
 
         return new HtmlAssetUrls(assetRelUrl(oldFile), assetRelUrl(newFile), assetRelUrl(diffFile));
     }
@@ -649,31 +647,21 @@ public class ReportGenerator {
             Path dest,
             ImageFormat format,
             float jpegQuality,
-            int splitHeadHeight,
-            int splitTailHeight,
+            int cropHeight,
             boolean trimMargins,
             int canvasW,
             int canvasH) throws IOException {
-        BufferedImage img = ImageComparator.loadForReportCanvas(source, trimMargins, canvasW, canvasH);
-        BufferedImage display = ImageDisplaySplitter.apply(img, splitHeadHeight, splitTailHeight);
-        if (display != img) {
-            ImageScaleUtil.dispose(img);
-        }
-        writeImageToFile(display, dest, format, jpegQuality);
-        ImageScaleUtil.dispose(display);
+        BufferedImage img = ImageComparator.loadForReportCanvas(source, trimMargins, cropHeight, canvasW, canvasH);
+        writeImageToFile(img, dest, format, jpegQuality);
+        ImageScaleUtil.dispose(img);
     }
 
-    private static void writeAssetDiffOverlay(
-            ImageComparator.Result r, Path dest, int splitHeadHeight, int splitTailHeight) throws IOException {
+    private static void writeAssetDiffOverlay(ImageComparator.Result r, Path dest) throws IOException {
         BufferedImage overlay = r.diffOverlayImage();
         if (overlay == null) {
             return;
         }
-        BufferedImage display = ImageDisplaySplitter.apply(overlay, splitHeadHeight, splitTailHeight);
-        ImageIO.write(display, "png", dest.toFile());
-        if (display != overlay) {
-            ImageScaleUtil.dispose(display);
-        }
+        ImageIO.write(overlay, "png", dest.toFile());
     }
 
     private static void writeImageToFile(
@@ -881,26 +869,11 @@ public class ReportGenerator {
 
     /** PDF 等で HTML と同じ表示用画像を使う */
     static BufferedImage prepareDisplayImage(
-            BufferedImage image,
-            File fallbackFile,
-            int splitHeadHeight,
-            int splitTailHeight) throws IOException {
-        BufferedImage loaded = image;
-        if (loaded == null) {
-            loaded = ImageIO.read(fallbackFile);
-            if (loaded == null) {
-                throw new IOException("画像を読み込めません: " + fallbackFile.getAbsolutePath());
-            }
+            BufferedImage image, File fallbackFile, boolean trimMargins, int cropHeight) throws IOException {
+        if (image != null) {
+            return ImageCropper.cropFromTop(image, cropHeight);
         }
-        return ImageDisplaySplitter.apply(loaded, splitHeadHeight, splitTailHeight);
-    }
-
-    static BufferedImage prepareDiffDisplayImage(
-            BufferedImage diffOverlayImage, int splitHeadHeight, int splitTailHeight) {
-        if (diffOverlayImage == null) {
-            return null;
-        }
-        return ImageDisplaySplitter.apply(diffOverlayImage, splitHeadHeight, splitTailHeight);
+        return ImageComparator.loadForReport(fallbackFile, trimMargins, cropHeight);
     }
 
     static String sectionTitle(ImageComparator.Result r) {

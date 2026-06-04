@@ -58,20 +58,20 @@ public final class PdfReportGenerator {
             File oldDir,
             File newDir,
             File output,
-            int splitHeadHeight,
-            int splitTailHeight,
+            int cropHeight,
+            boolean trimMargins,
             long maxSizeBytes) throws IOException {
         if (results.isEmpty()) {
             throw new IOException("PDF 出力対象がありません");
         }
         if (maxSizeBytes <= 0) {
-            writeSinglePdf(results, oldDir, newDir, output, splitHeadHeight, splitTailHeight);
+            writeSinglePdf(results, oldDir, newDir, output, cropHeight, trimMargins);
             return List.of(output);
         }
 
         File probeFile = new File(output.getParentFile(), output.getName() + ".probe.part");
         try {
-            writeSinglePdf(results, oldDir, newDir, probeFile, splitHeadHeight, splitTailHeight);
+            writeSinglePdf(results, oldDir, newDir, probeFile, cropHeight, trimMargins);
             if (probeFile.length() <= maxSizeBytes) {
                 Files.move(probeFile.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 return List.of(output);
@@ -86,9 +86,9 @@ public final class PdfReportGenerator {
         while (index < results.size()) {
             List<ImageComparator.Result> chunk = buildResultChunk(
                     results, index, maxSizeBytes, oldDir, newDir, output.getParentFile(),
-                    splitHeadHeight, splitTailHeight);
+                    cropHeight, trimMargins);
             File partFile = partOutputFile(output, part++);
-            writeSinglePdf(chunk, oldDir, newDir, partFile, splitHeadHeight, splitTailHeight);
+            writeSinglePdf(chunk, oldDir, newDir, partFile, cropHeight, trimMargins);
             outputs.add(partFile);
             index += chunk.size();
         }
@@ -100,21 +100,21 @@ public final class PdfReportGenerator {
             File oldDir,
             File newDir,
             File output,
-            int splitHeadHeight,
-            int splitTailHeight) throws IOException {
+            int cropHeight,
+            boolean trimMargins) throws IOException {
         File tempFile = new File(output.getParentFile(), output.getName() + ".part");
         try (PDDocument doc = new PDDocument();
              FontHandle fontHandle = loadJapaneseFont(doc)) {
             PDFont font = fontHandle.font();
 
             for (var r : results) {
-                BufferedImage oldImg = ReportGenerator.loadReportImage(
-                        r.reportOldImage(), new File(oldDir, r.fileName()));
-                BufferedImage newImg = ReportGenerator.loadReportImage(
-                        r.reportNewImage(), new File(newDir, r.fileName()));
+                BufferedImage oldImg = ImageComparator.loadForReport(
+                        new File(oldDir, r.fileName()), trimMargins, cropHeight);
+                BufferedImage newImg = ImageComparator.loadForReport(
+                        new File(newDir, r.fileName()), trimMargins, cropHeight);
                 String metrics = ReportGenerator.comparisonMetricsLine(r);
-                writePdfPagesForImage(doc, font, "旧", r.fileName(), metrics, oldImg, splitHeadHeight, splitTailHeight);
-                writePdfPagesForImage(doc, font, "新", r.fileName(), metrics, newImg, splitHeadHeight, splitTailHeight);
+                writeImagePage(doc, font, "旧　" + r.fileName(), metrics, oldImg);
+                writeImagePage(doc, font, "新　" + r.fileName(), metrics, newImg);
             }
 
             doc.save(tempFile);
@@ -137,17 +137,17 @@ public final class PdfReportGenerator {
             File oldDir,
             File newDir,
             File workDir,
-            int splitHeadHeight,
-            int splitTailHeight) throws IOException {
+            int cropHeight,
+            boolean trimMargins) throws IOException {
         List<ImageComparator.Result> chunk = new ArrayList<>();
         chunk.add(results.get(startIndex));
         File probeFile = new File(workDir, ".pdf-chunk-probe.part");
         try {
-            writeSinglePdf(chunk, oldDir, newDir, probeFile, splitHeadHeight, splitTailHeight);
+            writeSinglePdf(chunk, oldDir, newDir, probeFile, cropHeight, trimMargins);
             for (int i = startIndex + 1; i < results.size(); i++) {
                 List<ImageComparator.Result> trial = new ArrayList<>(chunk);
                 trial.add(results.get(i));
-                writeSinglePdf(trial, oldDir, newDir, probeFile, splitHeadHeight, splitTailHeight);
+                writeSinglePdf(trial, oldDir, newDir, probeFile, cropHeight, trimMargins);
                 if (probeFile.length() > maxSizeBytes) {
                     break;
                 }
@@ -175,25 +175,6 @@ public final class PdfReportGenerator {
             return String.format("%.1f KB", bytes / 1024.0);
         }
         return String.format("%.2f MB", bytes / (1024.0 * 1024.0));
-    }
-
-    private static void writePdfPagesForImage(
-            PDDocument doc,
-            PDFont font,
-            String label,
-            String fileName,
-            String metricsLine,
-            BufferedImage image,
-            int splitHeadHeight,
-            int splitTailHeight) throws IOException {
-        if (ImageDisplaySplitter.isSplitApplied(image, splitHeadHeight, splitTailHeight)) {
-            writeImagePage(doc, font, label + "　" + fileName + "（先頭）", metricsLine,
-                    ImageDisplaySplitter.cropHead(image, splitHeadHeight));
-            writeImagePage(doc, font, label + "　" + fileName + "（末尾）", metricsLine,
-                    ImageDisplaySplitter.cropTail(image, splitTailHeight));
-        } else {
-            writeImagePage(doc, font, label + "　" + fileName, metricsLine, image);
-        }
     }
 
     private static void writeImagePage(
