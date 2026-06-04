@@ -10,9 +10,10 @@ import javax.imageio.stream.ImageOutputStream;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.file.*;
-import java.util.Base64;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
+import java.util.stream.Stream;
 
 public class ReportGenerator {
 
@@ -50,7 +51,8 @@ public class ReportGenerator {
             ImageFormat imageFormat,
             float jpegQuality,
             int splitHeadHeight,
-            int splitTailHeight) throws IOException {
+            int splitTailHeight,
+            boolean trimMargins) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("""
                 <!DOCTYPE html><html><head><meta charset='UTF-8'><title>Screen Diff Report</title>
@@ -74,15 +76,14 @@ public class ReportGenerator {
                 .pair.single-new>div.new-panel{flex:1}
                 .pair.single-old>div.new-panel{display:none}
                 .pair.single-old>div.old-panel{flex:1}
-                .img-wrap{position:relative;display:inline-block;width:100%;overflow:hidden;cursor:zoom-in;border:1px solid #888;background:#fafafa}
-                .img-wrap.zoomed{cursor:grab}
+                .img-wrap{display:flex;justify-content:center;width:100%;overflow:hidden;cursor:zoom-in;border:1px solid #888;background:#fafafa}
+                .img-wrap.zoomed{cursor:grab;justify-content:flex-start}
                 .img-wrap.zoomed.dragging{cursor:grabbing;user-select:none}
-                .img-wrap.zoomed img{image-rendering:pixelated;image-rendering:crisp-edges}
-                .img-zoom-inner{position:relative;display:block;width:fit-content;max-width:100%;margin:0 auto;transform-origin:0 0}
-                .img-wrap.zoomed .img-zoom-inner{margin:0}
-                .img-wrap img{width:auto;height:auto;max-width:100%;display:block;border:0}
-                .img-wrap .overlay{position:absolute;top:0;left:0;width:100%;height:100%;display:none;pointer-events:none;opacity:0.5}
-                .img-wrap .blink-img{position:absolute;top:0;left:0;width:100%;height:100%;display:none;pointer-events:none}
+                .img-wrap.zoomed .report-base{image-rendering:pixelated;image-rendering:crisp-edges}
+                .img-zoom-inner{position:relative;display:inline-block;max-width:100%;line-height:0;transform-origin:0 0}
+                .img-zoom-inner .report-base{position:relative;z-index:0;width:auto;height:auto;max-width:100%;display:block;border:0;vertical-align:top}
+                .img-zoom-inner .overlay,.img-zoom-inner .blink-img{position:absolute;top:0;left:0;width:100%;height:100%;display:none;pointer-events:none;object-fit:fill}
+                .img-zoom-inner .overlay{opacity:0.5}
                 .text-diff{margin-top:8px;border:1px solid #ccc;border-radius:4px;background:#fafafa}
                 .text-diff summary{padding:8px 12px;cursor:pointer;font-size:13px;font-weight:bold;user-select:none;list-style:disclosure-closed inside}
                 .text-diff[open] summary{border-bottom:1px solid #ddd;list-style:disclosure-open inside}
@@ -354,7 +355,7 @@ public class ReportGenerator {
                   return Array.from(pair.querySelectorAll('.img-wrap'));
                 }
                 function getActualSizeScale(wrap){
-                  var base=wrap.querySelector('.img-zoom-inner img');
+                  var base=wrap.querySelector('.img-zoom-inner .report-base');
                   if(!base||!base.naturalWidth||!base.naturalHeight){return 1;}
                   var displayW=base.offsetWidth;
                   if(displayW<=0){return 1;}
@@ -479,7 +480,7 @@ public class ReportGenerator {
                     return;
                   }
                   var inner=wrap.querySelector('.img-zoom-inner');
-                  var base=inner?inner.querySelector('img'):null;
+                  var base=inner?inner.querySelector('.report-base'):null;
                   if(!inner||!base||!base.src||!base.naturalWidth){return;}
                   var innerRect=inner.getBoundingClientRect();
                   var clickX=e.clientX-innerRect.left;
@@ -519,24 +520,21 @@ public class ReportGenerator {
         appendHtmlSummaryAccordion(sb, results);
         sb.append("<div id='report_sections'>");
 
+        Path assetsDir = prepareAssetsDir(output);
+        var resultList = new ArrayList<>(results);
         int idx = 0;
-        StringBuilder imageDataJson = new StringBuilder();
-        for (var r : results) {
+        for (int i = 0; i < resultList.size(); i++) {
+            ImageComparator.Result r = resultList.get(i);
+            HtmlAssetUrls urls = writeHtmlImageAssets(
+                    idx, r, oldDir, newDir, assetsDir, imageFormat, jpegQuality,
+                    splitHeadHeight, splitTailHeight, trimMargins);
+            resultList.set(i, ImageComparator.releaseImages(r));
+            r = resultList.get(i);
+
             String diffOldId = "diff_old_" + idx;
             String diffNewId = "diff_new_" + idx;
             String imgOldOnNewId = "img_old_on_new_" + idx;
             String imgNewOnOldId = "img_new_on_old_" + idx;
-            String diffSrc = toDataUriPng(ImageDisplaySplitter.apply(r.diffOverlayImage(), splitHeadHeight, splitTailHeight));
-            String oldSrc = encodeReportImage(r.reportOldImage(), new File(oldDir, r.fileName()), imageFormat, jpegQuality, splitHeadHeight, splitTailHeight);
-            String newSrc = encodeReportImage(r.reportNewImage(), new File(newDir, r.fileName()), imageFormat, jpegQuality, splitHeadHeight, splitTailHeight);
-
-            if (idx > 0) {
-                imageDataJson.append(',');
-            }
-            imageDataJson.append("{\"o\":").append(toJsString(oldSrc))
-                    .append(",\"n\":").append(toJsString(newSrc))
-                    .append(",\"d\":").append(toJsString(diffSrc))
-                    .append('}');
 
             sb.append("<div class='diff-section' id='diff-").append(idx)
               .append("' data-index='").append(idx)
@@ -546,15 +544,23 @@ public class ReportGenerator {
               .append("' data-text='").append(formatTextDiffData(r)).append("'>")
               .append("<h2>").append(formatSectionTitle(r)).append("</h2>")
               .append("<div class='pair'>")
-              .append("<div class='old-panel'><p>旧</p><div class='img-wrap'><div class='img-zoom-inner'><img id='base_old_").append(idx).append("'>")
-              .append("<img id='").append(diffOldId).append("' class='overlay'>")
-              .append("<img id='").append(imgNewOnOldId).append("' class='overlay'>")
-              .append("<img id='blink_new_on_old_").append(idx).append("' class='blink-img'>")
+              .append("<div class='old-panel'><p>旧</p><div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_old_")
+              .append(idx).append("' src='").append(escapeHtmlAttr(urls.oldUrl())).append("'>")
+              .append("<img id='").append(diffOldId).append("' class='overlay' src='")
+              .append(escapeHtmlAttr(urls.diffUrl())).append("'>")
+              .append("<img id='").append(imgNewOnOldId).append("' class='overlay' src='")
+              .append(escapeHtmlAttr(urls.newUrl())).append("'>")
+              .append("<img id='blink_new_on_old_").append(idx).append("' class='blink-img' src='")
+              .append(escapeHtmlAttr(urls.newUrl())).append("'>")
               .append("</div></div></div>")
-              .append("<div class='new-panel'><p>新</p><div class='img-wrap'><div class='img-zoom-inner'><img id='base_new_").append(idx).append("'>")
-              .append("<img id='").append(diffNewId).append("' class='overlay'>")
-              .append("<img id='").append(imgOldOnNewId).append("' class='overlay'>")
-              .append("<img id='blink_old_on_new_").append(idx).append("' class='blink-img'>")
+              .append("<div class='new-panel'><p>新</p><div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_new_")
+              .append(idx).append("' src='").append(escapeHtmlAttr(urls.newUrl())).append("'>")
+              .append("<img id='").append(diffNewId).append("' class='overlay' src='")
+              .append(escapeHtmlAttr(urls.diffUrl())).append("'>")
+              .append("<img id='").append(imgOldOnNewId).append("' class='overlay' src='")
+              .append(escapeHtmlAttr(urls.oldUrl())).append("'>")
+              .append("<img id='blink_old_on_new_").append(idx).append("' class='blink-img' src='")
+              .append(escapeHtmlAttr(urls.oldUrl())).append("'>")
               .append("</div></div></div>")
               .append("</div>");
             appendTextDiffAccordion(sb, oldDir, newDir, r);
@@ -565,30 +571,144 @@ public class ReportGenerator {
                 </div>
                 <script>
                 totalImages=%d;
-                var reportImages=[%s];
-                function applyReportImages(){
-                  for(var i=0;i<reportImages.length;i++){
-                    var d=reportImages[i];
-                    document.getElementById('base_old_'+i).src=d.o;
-                    document.getElementById('diff_old_'+i).src=d.d;
-                    document.getElementById('img_new_on_old_'+i).src=d.n;
-                    document.getElementById('blink_new_on_old_'+i).src=d.n;
-                    document.getElementById('base_new_'+i).src=d.n;
-                    document.getElementById('diff_new_'+i).src=d.d;
-                    document.getElementById('img_old_on_new_'+i).src=d.o;
-                    document.getElementById('blink_old_on_new_'+i).src=d.o;
-                  }
-                }
-                applyReportImages();
                 initImageZoom();
                 initHeaderOffset();
                 applySummaryFilters();
                 scrollToDiffFromHash();
                 window.addEventListener('hashchange',scrollToDiffFromHash);
                 </script>
-                """.formatted(idx, imageDataJson));
+                """.formatted(idx));
         sb.append("</div></body></html>");
         Files.writeString(output.toPath(), sb.toString());
+    }
+
+    private record HtmlAssetUrls(String oldUrl, String newUrl, String diffUrl) {}
+
+    private static final String HTML_ASSETS_DIR = "report_assets";
+
+    private static Path prepareAssetsDir(File htmlFile) throws IOException {
+        Path dir = htmlFile.toPath().getParent().resolve(HTML_ASSETS_DIR);
+        if (Files.isDirectory(dir)) {
+            try (Stream<Path> paths = Files.list(dir)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try {
+                        Files.deleteIfExists(p);
+                    } catch (IOException ignored) {
+                    }
+                });
+            }
+        }
+        Files.createDirectories(dir);
+        return dir;
+    }
+
+    private static String assetRelUrl(String fileName) {
+        return HTML_ASSETS_DIR + "/" + fileName;
+    }
+
+    private static String assetFileExt(ImageFormat format) {
+        return format == ImageFormat.JPEG ? "jpg" : "png";
+    }
+
+    private static HtmlAssetUrls writeHtmlImageAssets(
+            int idx,
+            ImageComparator.Result r,
+            File oldDir,
+            File newDir,
+            Path assetsDir,
+            ImageFormat format,
+            float jpegQuality,
+            int splitHeadHeight,
+            int splitTailHeight,
+            boolean trimMargins) throws IOException {
+        BufferedImage overlay = r.diffOverlayImage();
+        if (overlay == null) {
+            throw new IOException("差分オーバーレイがありません: " + r.fileName());
+        }
+        int canvasW = overlay.getWidth();
+        int canvasH = overlay.getHeight();
+
+        String ext = assetFileExt(format);
+        String oldFile = String.format("%03d_old.%s", idx, ext);
+        String newFile = String.format("%03d_new.%s", idx, ext);
+        String diffFile = String.format("%03d_diff.png", idx);
+
+        writeAssetFromSource(
+                new File(oldDir, r.fileName()), assetsDir.resolve(oldFile),
+                format, jpegQuality, splitHeadHeight, splitTailHeight, trimMargins, canvasW, canvasH);
+        writeAssetFromSource(
+                new File(newDir, r.fileName()), assetsDir.resolve(newFile),
+                format, jpegQuality, splitHeadHeight, splitTailHeight, trimMargins, canvasW, canvasH);
+        writeAssetDiffOverlay(r, assetsDir.resolve(diffFile), splitHeadHeight, splitTailHeight);
+
+        return new HtmlAssetUrls(assetRelUrl(oldFile), assetRelUrl(newFile), assetRelUrl(diffFile));
+    }
+
+    private static void writeAssetFromSource(
+            File source,
+            Path dest,
+            ImageFormat format,
+            float jpegQuality,
+            int splitHeadHeight,
+            int splitTailHeight,
+            boolean trimMargins,
+            int canvasW,
+            int canvasH) throws IOException {
+        BufferedImage img = ImageComparator.loadForReportCanvas(source, trimMargins, canvasW, canvasH);
+        BufferedImage display = ImageDisplaySplitter.apply(img, splitHeadHeight, splitTailHeight);
+        if (display != img) {
+            ImageScaleUtil.dispose(img);
+        }
+        writeImageToFile(display, dest, format, jpegQuality);
+        ImageScaleUtil.dispose(display);
+    }
+
+    private static void writeAssetDiffOverlay(
+            ImageComparator.Result r, Path dest, int splitHeadHeight, int splitTailHeight) throws IOException {
+        BufferedImage overlay = r.diffOverlayImage();
+        if (overlay == null) {
+            return;
+        }
+        BufferedImage display = ImageDisplaySplitter.apply(overlay, splitHeadHeight, splitTailHeight);
+        ImageIO.write(display, "png", dest.toFile());
+        if (display != overlay) {
+            ImageScaleUtil.dispose(display);
+        }
+    }
+
+    private static void writeImageToFile(
+            BufferedImage img, Path dest, ImageFormat format, float jpegQuality) throws IOException {
+        if (format == ImageFormat.JPEG) {
+            writeJpegFile(img, dest, jpegQuality);
+        } else {
+            ImageIO.write(img, "png", dest.toFile());
+        }
+    }
+
+    private static void writeJpegFile(BufferedImage img, Path dest, float quality) throws IOException {
+        BufferedImage rgb = img;
+        if (img.getType() != BufferedImage.TYPE_INT_RGB) {
+            rgb = new BufferedImage(img.getWidth(), img.getHeight(), BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D g = rgb.createGraphics();
+            g.setColor(java.awt.Color.WHITE);
+            g.fillRect(0, 0, img.getWidth(), img.getHeight());
+            g.drawImage(img, 0, 0, null);
+            g.dispose();
+        }
+        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
+        ImageWriteParam param = writer.getDefaultWriteParam();
+        param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+        param.setCompressionQuality(quality);
+        try (OutputStream out = Files.newOutputStream(dest);
+             ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
+            writer.setOutput(ios);
+            writer.write(null, new IIOImage(rgb, null, null), param);
+        } finally {
+            writer.dispose();
+        }
+        if (rgb != img) {
+            ImageScaleUtil.dispose(rgb);
+        }
     }
 
     private static void appendHtmlSummaryAccordion(StringBuilder sb, List<ImageComparator.Result> results) {
@@ -756,7 +876,7 @@ public class ReportGenerator {
         if (loaded == null) {
             throw new IOException("画像を読み込めません: " + fallbackFile.getAbsolutePath());
         }
-        return loaded;
+        return ImageScaleUtil.limitForComparison(loaded);
     }
 
     /** PDF 等で HTML と同じ表示用画像を使う */
@@ -805,90 +925,6 @@ public class ReportGenerator {
 
     private static String formatTextDiffCsv(double textDiffPercent) {
         return textDiffPercent < 0 ? "" : String.format("%.1f", textDiffPercent);
-    }
-
-    private static String toJsString(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
-    }
-
-    private static String encodeReportImage(
-            BufferedImage image,
-            File fallbackFile,
-            ImageFormat format,
-            float jpegQuality,
-            int splitHeadHeight,
-            int splitTailHeight) throws IOException {
-        if (image != null) {
-            BufferedImage display = prepareDisplayImage(image, fallbackFile, splitHeadHeight, splitTailHeight);
-            if (format == ImageFormat.JPEG) {
-                return "data:image/jpeg;base64," + encodeImageJpeg(display, jpegQuality);
-            }
-            return toDataUriPng(display);
-        }
-        return encodeReportFile(fallbackFile, format, jpegQuality, splitHeadHeight, splitTailHeight);
-    }
-
-    private static String encodeReportFile(
-            File file, ImageFormat format, float jpegQuality, int splitHeadHeight, int splitTailHeight)
-            throws IOException {
-        BufferedImage img = ImageIO.read(file);
-        if (img == null) {
-            return encodeFileOriginal(file);
-        }
-        BufferedImage display = ImageDisplaySplitter.apply(img, splitHeadHeight, splitTailHeight);
-        if (format == ImageFormat.JPEG) {
-            return "data:image/jpeg;base64," + encodeImageJpeg(display, jpegQuality);
-        }
-        return toDataUriPng(display);
-    }
-
-    private static String encodeFileOriginal(File file) throws IOException {
-        String mime = mimeTypeForFile(file);
-        byte[] bytes = Files.readAllBytes(file.toPath());
-        return "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes);
-    }
-
-    private static String mimeTypeForFile(File file) {
-        String name = file.getName().toLowerCase(Locale.ROOT);
-        if (name.endsWith(".png")) return "image/png";
-        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
-        if (name.endsWith(".bmp")) return "image/bmp";
-        if (name.endsWith(".gif")) return "image/gif";
-        return "application/octet-stream";
-    }
-
-    private static String toDataUriPng(BufferedImage img) throws IOException {
-        return "data:image/png;base64," + encodeImagePng(img);
-    }
-
-    private static String encodeImageJpeg(BufferedImage img, float quality) throws IOException {
-        // JPEGは透明度非対応なのでRGBに変換
-        BufferedImage rgb = img;
-        if (img.getType() != BufferedImage.TYPE_INT_RGB) {
-            rgb = new BufferedImage(img.getWidth(), img.getHeight(), BufferedImage.TYPE_INT_RGB);
-            java.awt.Graphics2D g = rgb.createGraphics();
-            g.setColor(java.awt.Color.WHITE);
-            g.fillRect(0, 0, img.getWidth(), img.getHeight());
-            g.drawImage(img, 0, 0, null);
-            g.dispose();
-        }
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
-        ImageWriteParam param = writer.getDefaultWriteParam();
-        param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-        param.setCompressionQuality(quality);
-        try (ImageOutputStream ios = ImageIO.createImageOutputStream(baos)) {
-            writer.setOutput(ios);
-            writer.write(null, new IIOImage(rgb, null, null), param);
-        }
-        writer.dispose();
-        return Base64.getEncoder().encodeToString(baos.toByteArray());
-    }
-
-    private static String encodeImagePng(BufferedImage img) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ImageIO.write(img, "png", baos);
-        return Base64.getEncoder().encodeToString(baos.toByteArray());
     }
 
 }

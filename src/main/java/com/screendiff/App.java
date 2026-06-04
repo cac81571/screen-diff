@@ -163,7 +163,7 @@ public class App extends JFrame {
         saveAiPrompt();
         String text = aiPromptArea.getText();
         if (text.isBlank()) {
-            JOptionPane.showMessageDialog(this, "プロンプトが空です。", "エラー", JOptionPane.ERROR_MESSAGE);
+            showError("プロンプトが空です。");
             return;
         }
         StringSelection selection = new StringSelection(text);
@@ -343,13 +343,13 @@ public class App extends JFrame {
             if (path.isEmpty()) return;
             File dir = new File(path);
             if (!dir.isDirectory()) {
-                JOptionPane.showMessageDialog(this, "フォルダが存在しません: " + path, "エラー", JOptionPane.ERROR_MESSAGE);
+                showError("フォルダが存在しません: " + path);
                 return;
             }
             try {
                 Desktop.getDesktop().open(dir);
             } catch (IOException ex) {
-                JOptionPane.showMessageDialog(this, "エクスプローラを開けません: " + ex.getMessage(), "エラー", JOptionPane.ERROR_MESSAGE);
+                showError("エクスプローラを開けません: " + ex.getMessage());
             }
         });
         return btn;
@@ -374,7 +374,11 @@ public class App extends JFrame {
     }
 
     private record ComparisonContext(
-            List<ImageComparator.Result> results, File oldDir, File newDir, File outDir) {}
+            List<ImageComparator.Result> results,
+            File oldDir,
+            File newDir,
+            File outDir,
+            boolean trimMargins) {}
 
     private record ComparisonStart(
             File oldDir, File newDir, File outDir, File[] oldFiles,
@@ -385,12 +389,12 @@ public class App extends JFrame {
         String run(ComparisonContext ctx) throws Exception;
     }
 
-    private record ReportOutcome(String dialogMessage, Exception error) {
+    private record ReportOutcome(String dialogMessage, Throwable error) {
         static ReportOutcome finished(String message) {
             return new ReportOutcome(message, null);
         }
 
-        static ReportOutcome failed(Exception error) {
+        static ReportOutcome failed(Throwable error) {
             return new ReportOutcome(null, error);
         }
     }
@@ -403,19 +407,19 @@ public class App extends JFrame {
         File newDir = new File(newPath);
 
         if (!oldDir.isDirectory() || !newDir.isDirectory()) {
-            JOptionPane.showMessageDialog(this, "有効なフォルダを指定してください。", "エラー", JOptionPane.ERROR_MESSAGE);
+            showError("有効なフォルダを指定してください。");
             return null;
         }
 
         String outPath = getComboText(outDirCombo);
         if (outPath.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "出力先フォルダを指定してください。", "エラー", JOptionPane.ERROR_MESSAGE);
+            showError("出力先フォルダを指定してください。");
             return null;
         }
 
         File[] oldFiles = oldDir.listFiles((d, name) -> name.matches("(?i).*\\.(png|jpg|jpeg|bmp)"));
         if (oldFiles == null || oldFiles.length == 0) {
-            JOptionPane.showMessageDialog(this, "旧フォルダに画像がありません。", "エラー", JOptionPane.ERROR_MESSAGE);
+            showError("旧フォルダに画像がありません。");
             return null;
         }
 
@@ -458,8 +462,10 @@ public class App extends JFrame {
                     line += ", テキスト " + String.format("%.1f%%", result.textDiffPercent());
                 }
                 log(line);
-            } catch (Exception ex) {
-                log(oldFile.getName() + " : エラー - " + ex.getMessage());
+            } catch (OutOfMemoryError oom) {
+                logError(oldFile.getName() + " : メモリ不足（画像が大きすぎます）。設定でJPEG変換を有効にするか、件数を減らしてください。");
+            } catch (Throwable t) {
+                logError(oldFile.getName() + " : 比較エラー", t);
             }
         }
         if (results.isEmpty()) {
@@ -475,6 +481,7 @@ public class App extends JFrame {
 
     private void runReportTask(ReportTask task) {
         if (reportInProgress) {
+            logError("処理が実行中です。完了までお待ちください。");
             return;
         }
         logSessionId++;
@@ -494,11 +501,12 @@ public class App extends JFrame {
                 if (results.isEmpty()) {
                     return ReportOutcome.finished(null);
                 }
-                ComparisonContext ctx = new ComparisonContext(results, start.oldDir(), start.newDir(), start.outDir());
+                ComparisonContext ctx = new ComparisonContext(
+                        results, start.oldDir(), start.newDir(), start.outDir(), start.trimMargins());
                 try {
                     return ReportOutcome.finished(task.run(ctx));
-                } catch (Exception ex) {
-                    return ReportOutcome.failed(ex);
+                } catch (Throwable t) {
+                    return ReportOutcome.failed(t);
                 }
             }
 
@@ -512,21 +520,27 @@ public class App extends JFrame {
                         return;
                     }
                     if (outcome.error() != null) {
-                        logReportError(outcome.error());
+                        logError("レポート出力エラー", outcome.error());
+                        JOptionPane.showMessageDialog(
+                                App.this,
+                                "処理中にエラーが発生しました。ログを確認してください。",
+                                "エラー",
+                                JOptionPane.ERROR_MESSAGE);
                     } else if (outcome.dialogMessage() != null) {
                         JOptionPane.showMessageDialog(
                                 App.this, outcome.dialogMessage(), "完了", JOptionPane.INFORMATION_MESSAGE);
                     }
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
-                    log("処理が中断されました。");
+                    logError("処理が中断されました。");
                 } catch (java.util.concurrent.ExecutionException ex) {
-                    Throwable cause = ex.getCause();
-                    if (cause instanceof Exception e) {
-                        logReportError(e);
-                    } else {
-                        log("レポート出力エラー: " + ex.getMessage());
-                    }
+                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                    logError("レポート出力エラー", cause);
+                    JOptionPane.showMessageDialog(
+                            App.this,
+                            "処理中にエラーが発生しました。ログを確認してください。",
+                            "エラー",
+                            JOptionPane.ERROR_MESSAGE);
                 }
             }
         }.execute();
@@ -563,7 +577,8 @@ public class App extends JFrame {
                     imageFormat,
                     jpegQuality,
                     splitHeadHeight,
-                    splitTailHeight);
+                    splitTailHeight,
+                    ctx.trimMargins());
             log("HTML出力: " + htmlFile.getAbsolutePath());
             return "HTMLレポート出力完了";
         });
@@ -602,13 +617,36 @@ public class App extends JFrame {
         });
     }
 
-    private void logReportError(Exception ex) {
-        log("レポート出力エラー: " + ex.getMessage());
-        Throwable cause = ex.getCause();
+    private void showError(String message) {
+        logError(message);
+        JOptionPane.showMessageDialog(this, message, "エラー", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private void logError(String message) {
+        log("【エラー】 " + message);
+    }
+
+    private void logError(String context, Throwable t) {
+        log("【エラー】 " + context + ": " + throwableMessage(t));
+        logThrowableCauses(t.getCause());
+    }
+
+    private void logThrowableCauses(Throwable cause) {
         while (cause != null) {
-            log("  原因: " + cause.getMessage());
+            log("  原因: " + throwableMessage(cause));
             cause = cause.getCause();
         }
+    }
+
+    private static String throwableMessage(Throwable t) {
+        if (t == null) {
+            return "(不明)";
+        }
+        String msg = t.getMessage();
+        if (msg != null && !msg.isBlank()) {
+            return t.getClass().getSimpleName() + " - " + msg;
+        }
+        return t.getClass().getSimpleName();
     }
 
     private void loadHistory() {

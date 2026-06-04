@@ -35,6 +35,11 @@ public class ImageComparator {
             throws IOException {
         BufferedImage img1 = ImageIO.read(oldFile);
         BufferedImage img2 = ImageIO.read(newFile);
+        if (img1 == null || img2 == null) {
+            ImageScaleUtil.dispose(img1);
+            ImageScaleUtil.dispose(img2);
+            throw new IOException("画像を読み込めません: " + oldFile.getName());
+        }
 
         int origOldW = img1.getWidth(), origOldH = img1.getHeight();
         int origNewW = img2.getWidth(), origNewH = img2.getHeight();
@@ -43,28 +48,31 @@ public class ImageComparator {
         int oldH = origOldH;
         int newW = origNewW;
         int newH = origNewH;
-        BufferedImage reportOld = null;
-        BufferedImage reportNew = null;
 
         if (trimMargins) {
-            img1 = ImageMarginTrimmer.trim(img1);
-            img2 = ImageMarginTrimmer.trim(img2);
-            reportOld = img1;
-            reportNew = img2;
+            BufferedImage trimmed1 = ImageMarginTrimmer.trim(img1);
+            BufferedImage trimmed2 = ImageMarginTrimmer.trim(img2);
+            if (trimmed1 != img1) {
+                ImageScaleUtil.dispose(img1);
+            }
+            if (trimmed2 != img2) {
+                ImageScaleUtil.dispose(img2);
+            }
+            img1 = trimmed1;
+            img2 = trimmed2;
             oldW = img1.getWidth();
             oldH = img1.getHeight();
             newW = img2.getWidth();
             newH = img2.getHeight();
         }
 
+        img1 = ImageScaleUtil.limitForComparison(img1);
+        img2 = ImageScaleUtil.limitForComparison(img2);
+
         int w = Math.max(img1.getWidth(), img2.getWidth());
         int h = Math.max(img1.getHeight(), img2.getHeight());
-        if (img1.getWidth() != w || img1.getHeight() != h) {
-            img1 = resizeToFit(img1, w, h);
-        }
-        if (img2.getWidth() != w || img2.getHeight() != h) {
-            img2 = resizeToFit(img2, w, h);
-        }
+        img1 = padToCanvas(img1, w, h);
+        img2 = padToCanvas(img2, w, h);
 
         ImageComparison comparison = new ImageComparison(img1, img2);
         comparison.setMinimalRectangleSize(blockSize);
@@ -77,6 +85,9 @@ public class ImageComparator {
         TextComparator.TextResult textResult = TextComparator.compare(
                 oldFile.getParentFile(), newFile.getParentFile(), oldFile.getName());
 
+        ImageScaleUtil.dispose(img1);
+        ImageScaleUtil.dispose(img2);
+
         return new Result(
                 oldFile.getName(),
                 oldW,
@@ -88,8 +99,26 @@ public class ImageComparator {
                 textResult.diffPercent(),
                 diffOverlay,
                 "未判定",
-                reportOld,
-                reportNew);
+                null,
+                null);
+    }
+
+    /** レポート用画像を解放（HTML 出力後に呼ぶ） */
+    public static Result releaseImages(Result result) {
+        ImageScaleUtil.dispose(result.diffOverlayImage());
+        return new Result(
+                result.fileName(),
+                result.oldWidth(),
+                result.oldHeight(),
+                result.newWidth(),
+                result.newHeight(),
+                result.diffPercent(),
+                result.sizeDiffPercent(),
+                result.textDiffPercent(),
+                null,
+                result.aiJudgment(),
+                null,
+                null);
     }
 
     /**
@@ -140,13 +169,42 @@ public class ImageComparator {
         return Math.max(wDiff, hDiff);
     }
 
-    private static BufferedImage resizeToFit(BufferedImage img, int w, int h) {
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+    /**
+     * レポート用に比較時と同じキャンバスへ配置する（旧・新・差分オーバーレイのピクセル位置を一致させる）。
+     */
+    static BufferedImage loadForReportCanvas(File file, boolean trimMargins, int canvasW, int canvasH)
+            throws IOException {
+        BufferedImage img = ImageIO.read(file);
+        if (img == null) {
+            throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
+        }
+        if (trimMargins) {
+            BufferedImage trimmed = ImageMarginTrimmer.trim(img);
+            if (trimmed != img) {
+                ImageScaleUtil.dispose(img);
+            }
+            img = trimmed;
+        }
+        img = ImageScaleUtil.limitForComparison(img);
+        return padToCanvas(img, canvasW, canvasH);
+    }
+
+    static BufferedImage padToCanvas(BufferedImage img, int canvasW, int canvasH) {
+        if (img.getWidth() == canvasW && img.getHeight() == canvasH) {
+            return img;
+        }
+        BufferedImage out = new BufferedImage(canvasW, canvasH, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = out.createGraphics();
-        g.setColor(Color.WHITE);
-        g.fillRect(0, 0, w, h);
-        g.drawImage(img, 0, 0, null);
-        g.dispose();
+        try {
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, canvasW, canvasH);
+            g.drawImage(img, 0, 0, null);
+        } finally {
+            g.dispose();
+        }
+        if (img != out) {
+            ImageScaleUtil.dispose(img);
+        }
         return out;
     }
 }
