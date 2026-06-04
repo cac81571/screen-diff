@@ -69,6 +69,11 @@ public class App extends JFrame {
     private final JLabel splitTailHeightLabel = new JLabel("末尾表示高さ(px):");
     private final JTextArea logArea = new JTextArea(10, 50);
     private final JTextArea aiPromptArea = new JTextArea(20, 60);
+    private JButton htmlReportButton;
+    private JButton pdfReportButton;
+    private volatile boolean reportInProgress;
+    /** 処理開始ごとに増やし、前回ジョブの invokeLater ログを無視する */
+    private volatile long logSessionId;
 
     public App() {
         super("Screen Diff Tool");
@@ -120,15 +125,15 @@ public class App extends JFrame {
         c.gridx = 2; c.weightx = 0;
         inputPanel.add(createOpenButton(outDirCombo), c);
 
-        JButton htmlBtn = new JButton("HTML比較レポート作成");
-        htmlBtn.addActionListener(e -> createHtmlReport());
-        JButton pdfBtn = new JButton("PDF比較レポート作成");
-        pdfBtn.addActionListener(e -> createPdfReport());
+        htmlReportButton = new JButton("HTML比較レポート作成");
+        htmlReportButton.addActionListener(e -> createHtmlReport());
+        pdfReportButton = new JButton("PDF比較レポート作成");
+        pdfReportButton.addActionListener(e -> createPdfReport());
         JButton copyAiPromptBtn = new JButton("PDF検証用AIプロンプトコピー");
         copyAiPromptBtn.addActionListener(e -> copyAiPromptToClipboard());
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        btnPanel.add(htmlBtn);
-        btnPanel.add(pdfBtn);
+        btnPanel.add(htmlReportButton);
+        btnPanel.add(pdfReportButton);
         btnPanel.add(copyAiPromptBtn);
         c.gridx = 1; c.gridy = 3;
         inputPanel.add(btnPanel, c);
@@ -371,7 +376,27 @@ public class App extends JFrame {
     private record ComparisonContext(
             List<ImageComparator.Result> results, File oldDir, File newDir, File outDir) {}
 
-    private ComparisonContext prepareComparison() {
+    private record ComparisonStart(
+            File oldDir, File newDir, File outDir, File[] oldFiles,
+            int blockSize, int threshold, boolean trimMargins) {}
+
+    @FunctionalInterface
+    private interface ReportTask {
+        String run(ComparisonContext ctx) throws Exception;
+    }
+
+    private record ReportOutcome(String dialogMessage, Exception error) {
+        static ReportOutcome finished(String message) {
+            return new ReportOutcome(message, null);
+        }
+
+        static ReportOutcome failed(Exception error) {
+            return new ReportOutcome(null, error);
+        }
+    }
+
+    /** EDT 上で入力検証とログ初期化のみ行う */
+    private ComparisonStart beginComparison() {
         String oldPath = getComboText(oldDirCombo);
         String newPath = getComboText(newDirCombo);
         File oldDir = new File(oldPath);
@@ -382,9 +407,11 @@ public class App extends JFrame {
             return null;
         }
 
-        addToHistory(oldDirCombo, oldPath);
-        addToHistory(newDirCombo, newPath);
-        saveHistory();
+        String outPath = getComboText(outDirCombo);
+        if (outPath.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "出力先フォルダを指定してください。", "エラー", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
 
         File[] oldFiles = oldDir.listFiles((d, name) -> name.matches("(?i).*\\.(png|jpg|jpeg|bmp)"));
         if (oldFiles == null || oldFiles.length == 0) {
@@ -392,11 +419,17 @@ public class App extends JFrame {
             return null;
         }
 
+        addToHistory(oldDirCombo, oldPath);
+        addToHistory(newDirCombo, newPath);
+        File outDir = new File(outPath);
+        outDir.mkdirs();
+        addToHistory(outDirCombo, outPath);
+        saveHistory();
+
         int blockSize = blockSizeSlider.getValue();
         int threshold = thresholdSlider.getValue();
         boolean trimMargins = trimMarginsCheck.isSelected();
 
-        logArea.setText("");
         log("パラメータ: ブロックサイズ=" + blockSize + ", しきい値=" + threshold
                 + ", 余白削除=" + (trimMargins ? "ON" : "OFF")
                 + ", 画像出力=" + (jpegFormatRadio.isSelected() ? "JPEG変換" : "変換なし")
@@ -404,16 +437,21 @@ public class App extends JFrame {
                 + (splitDisplayCheck.isSelected()
                         ? ", 先頭=" + splitHeadHeightSpinner.getValue() + "px, 末尾=" + splitTailHeightSpinner.getValue() + "px"
                         : ""));
-        List<ImageComparator.Result> results = new ArrayList<>();
 
-        for (File oldFile : oldFiles) {
-            File newFile = new File(newDir, oldFile.getName());
+        return new ComparisonStart(oldDir, newDir, outDir, oldFiles, blockSize, threshold, trimMargins);
+    }
+
+    private List<ImageComparator.Result> compareImages(ComparisonStart start) {
+        List<ImageComparator.Result> results = new ArrayList<>();
+        for (File oldFile : start.oldFiles()) {
+            File newFile = new File(start.newDir(), oldFile.getName());
             if (!newFile.exists()) {
                 log(oldFile.getName() + " : 新フォルダに存在しません。スキップ。");
                 continue;
             }
             try {
-                var result = ImageComparator.compare(oldFile, newFile, blockSize, threshold, trimMargins);
+                var result = ImageComparator.compare(
+                        oldFile, newFile, start.blockSize(), start.threshold(), start.trimMargins());
                 results.add(result);
                 String line = result.fileName() + " : 差分 " + String.format("%.2f%%", result.diffPercent());
                 if (result.textDiffPercent() >= 0) {
@@ -424,23 +462,83 @@ public class App extends JFrame {
                 log(oldFile.getName() + " : エラー - " + ex.getMessage());
             }
         }
-
         if (results.isEmpty()) {
             log("比較対象がありません。");
-            return null;
+        }
+        return results;
+    }
+
+    private void clearLog() {
+        logArea.setText("");
+        logArea.setCaretPosition(0);
+    }
+
+    private void runReportTask(ReportTask task) {
+        if (reportInProgress) {
+            return;
+        }
+        logSessionId++;
+        clearLog();
+        ComparisonStart start = beginComparison();
+        if (start == null) {
+            return;
         }
 
-        String outPath = getComboText(outDirCombo);
-        if (outPath.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "出力先フォルダを指定してください。", "エラー", JOptionPane.ERROR_MESSAGE);
-            return null;
-        }
-        File outDir = new File(outPath);
-        outDir.mkdirs();
-        addToHistory(outDirCombo, outPath);
-        saveHistory();
+        reportInProgress = true;
+        setReportButtonsEnabled(false);
 
-        return new ComparisonContext(results, oldDir, newDir, outDir);
+        new SwingWorker<ReportOutcome, Void>() {
+            @Override
+            protected ReportOutcome doInBackground() {
+                List<ImageComparator.Result> results = compareImages(start);
+                if (results.isEmpty()) {
+                    return ReportOutcome.finished(null);
+                }
+                ComparisonContext ctx = new ComparisonContext(results, start.oldDir(), start.newDir(), start.outDir());
+                try {
+                    return ReportOutcome.finished(task.run(ctx));
+                } catch (Exception ex) {
+                    return ReportOutcome.failed(ex);
+                }
+            }
+
+            @Override
+            protected void done() {
+                reportInProgress = false;
+                setReportButtonsEnabled(true);
+                try {
+                    ReportOutcome outcome = get();
+                    if (outcome == null) {
+                        return;
+                    }
+                    if (outcome.error() != null) {
+                        logReportError(outcome.error());
+                    } else if (outcome.dialogMessage() != null) {
+                        JOptionPane.showMessageDialog(
+                                App.this, outcome.dialogMessage(), "完了", JOptionPane.INFORMATION_MESSAGE);
+                    }
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    log("処理が中断されました。");
+                } catch (java.util.concurrent.ExecutionException ex) {
+                    Throwable cause = ex.getCause();
+                    if (cause instanceof Exception e) {
+                        logReportError(e);
+                    } else {
+                        log("レポート出力エラー: " + ex.getMessage());
+                    }
+                }
+            }
+        }.execute();
+    }
+
+    private void setReportButtonsEnabled(boolean enabled) {
+        if (htmlReportButton != null) {
+            htmlReportButton.setEnabled(enabled);
+        }
+        if (pdfReportButton != null) {
+            pdfReportButton.setEnabled(enabled);
+        }
     }
 
     private void writeCsvReport(ComparisonContext ctx) throws IOException {
@@ -450,11 +548,11 @@ public class App extends JFrame {
     }
 
     private void createHtmlReport() {
-        ComparisonContext ctx = prepareComparison();
-        if (ctx == null) {
-            return;
-        }
-        try {
+        ReportGenerator.ImageFormat imageFormat = getImageFormat();
+        float jpegQuality = jpegQualitySlider.getValue() / 100.0f;
+        int splitHeadHeight = getSplitHeadHeight();
+        int splitTailHeight = getSplitTailHeight();
+        runReportTask(ctx -> {
             writeCsvReport(ctx);
             File htmlFile = new File(ctx.outDir(), "report.html");
             ReportGenerator.writeHtml(
@@ -462,33 +560,29 @@ public class App extends JFrame {
                     ctx.oldDir(),
                     ctx.newDir(),
                     htmlFile,
-                    getImageFormat(),
-                    jpegQualitySlider.getValue() / 100.0f,
-                    getSplitHeadHeight(),
-                    getSplitTailHeight());
+                    imageFormat,
+                    jpegQuality,
+                    splitHeadHeight,
+                    splitTailHeight);
             log("HTML出力: " + htmlFile.getAbsolutePath());
-            JOptionPane.showMessageDialog(this, "HTMLレポート出力完了", "完了", JOptionPane.INFORMATION_MESSAGE);
-        } catch (Exception ex) {
-            log("レポート出力エラー: " + ex.getMessage());
-        }
+            return "HTMLレポート出力完了";
+        });
     }
 
     private void createPdfReport() {
-        ComparisonContext ctx = prepareComparison();
-        if (ctx == null) {
-            return;
-        }
-        try {
+        int splitHeadHeight = getSplitHeadHeight();
+        int splitTailHeight = getSplitTailHeight();
+        long maxSizeBytes = getPdfMaxSizeBytes();
+        runReportTask(ctx -> {
             writeCsvReport(ctx);
             File pdfFile = new File(ctx.outDir(), "report.pdf");
-            long maxSizeBytes = getPdfMaxSizeBytes();
             List<File> pdfFiles = PdfReportGenerator.writePdf(
                     ctx.results(),
                     ctx.oldDir(),
                     ctx.newDir(),
                     pdfFile,
-                    getSplitHeadHeight(),
-                    getSplitTailHeight(),
+                    splitHeadHeight,
+                    splitTailHeight,
                     maxSizeBytes);
             for (File file : pdfFiles) {
                 String size = PdfReportGenerator.formatFileSize(file.length());
@@ -502,17 +596,18 @@ public class App extends JFrame {
                 log("PDF を " + pdfFiles.size() + " ファイルに分割しました（上限 "
                         + PdfReportGenerator.formatFileSize(maxSizeBytes) + "）");
             }
-            String message = pdfFiles.size() > 1
+            return pdfFiles.size() > 1
                     ? "PDFレポート出力完了（" + pdfFiles.size() + " ファイルに分割）"
                     : "PDFレポート出力完了";
-            JOptionPane.showMessageDialog(this, message, "完了", JOptionPane.INFORMATION_MESSAGE);
-        } catch (Exception ex) {
-            log("レポート出力エラー: " + ex.getMessage());
-            Throwable cause = ex.getCause();
-            while (cause != null) {
-                log("  原因: " + cause.getMessage());
-                cause = cause.getCause();
-            }
+        });
+    }
+
+    private void logReportError(Exception ex) {
+        log("レポート出力エラー: " + ex.getMessage());
+        Throwable cause = ex.getCause();
+        while (cause != null) {
+            log("  原因: " + cause.getMessage());
+            cause = cause.getCause();
         }
     }
 
@@ -588,7 +683,19 @@ public class App extends JFrame {
     }
 
     private void log(String msg) {
-        logArea.append(msg + "\n");
+        long session = logSessionId;
+        Runnable append = () -> {
+            if (session != logSessionId) {
+                return;
+            }
+            logArea.append(msg + "\n");
+            logArea.setCaretPosition(logArea.getDocument().getLength());
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            append.run();
+        } else {
+            SwingUtilities.invokeLater(append);
+        }
     }
 
     public static void main(String[] args) {
