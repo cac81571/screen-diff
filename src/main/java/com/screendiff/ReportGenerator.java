@@ -26,7 +26,7 @@ public class ReportGenerator {
     public static void writeCsv(List<ImageComparator.Result> results, File output) throws IOException {
         try (CSVWriter writer = new CSVWriter(new OutputStreamWriter(new FileOutputStream(output), "UTF-8"))) {
             writer.writeNext(new String[]{
-                    "ファイル名", "ピクセル差異(%)", "横幅の差異(px)", "高さの差異(px)", "テキスト差異(行)",
+                    "ファイル名", "ピクセル差異(%)", "横幅の差異(px)", "高さの差異(px)", "切り取り", "テキスト差異(行)",
                     "旧画像幅", "新画像幅", "旧画像高さ", "新画像高さ"
             });
             for (var r : results) {
@@ -35,6 +35,7 @@ public class ReportGenerator {
                         String.format("%.2f", r.diffPercent()),
                         String.valueOf(r.widthDiff()),
                         String.valueOf(r.heightDiff()),
+                        formatCropSummaryLabel(r),
                         formatTextDiffCsv(r.textDiffLines()),
                         String.valueOf(r.oldWidth()),
                         String.valueOf(r.newWidth()),
@@ -73,6 +74,7 @@ public class ReportGenerator {
                 .pair{display:flex;gap:10px;width:100%;margin:0}
                 .pair>div{flex:1;min-width:0}
                 .pair p{margin:0 0 2px;font-size:13px}
+                .crop-note{margin:4px 0 0;font-size:12px;color:#555}
                 .pair.single-new>div.old-panel{display:none}
                 .pair.single-new>div.new-panel{flex:1}
                 .pair.single-old>div.new-panel{display:none}
@@ -115,6 +117,22 @@ public class ReportGenerator {
                 .summary-table tr:hover td{background:#f5f8fc}
                 .summary-table a{color:#06c;text-decoration:none}
                 .summary-table a:hover{text-decoration:underline}
+                @media print{
+                body{padding-top:0}
+                .header,.report-summary,.text-diff{display:none!important}
+                .content{padding:0}
+                .diff-section{
+                break-before:page;
+                page-break-before:always;
+                break-inside:avoid;
+                page-break-inside:avoid;
+                margin-bottom:0;
+                scroll-margin-top:0
+                }
+                .img-wrap{cursor:default;overflow:visible;border-color:#ccc}
+                .img-wrap.zoomed .img-zoom-inner{transform:none!important}
+                .img-zoom-inner .overlay,.img-zoom-inner .blink-img{display:none!important}
+                }
                 </style>
                 <script>
                 var totalImages = 0;
@@ -534,7 +552,9 @@ public class ReportGenerator {
               .append(escapeHtmlAttr(urls.newUrl())).append("'>")
               .append("<img id='blink_new_on_old_").append(idx).append("' class='blink-img' src='")
               .append(escapeHtmlAttr(urls.newUrl())).append("'>")
-              .append("</div></div></div>")
+              .append("</div></div>");
+            appendCropNoteIfNeeded(sb, r.oldCropped());
+            sb.append("</div>")
               .append("<div class='new-panel'><p>新</p><div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_new_")
               .append(idx).append("' src='").append(escapeHtmlAttr(urls.newUrl())).append("'>")
               .append("<img id='").append(diffNewId).append("' class='overlay' src='")
@@ -543,7 +563,9 @@ public class ReportGenerator {
               .append(escapeHtmlAttr(urls.oldUrl())).append("'>")
               .append("<img id='blink_old_on_new_").append(idx).append("' class='blink-img' src='")
               .append(escapeHtmlAttr(urls.oldUrl())).append("'>")
-              .append("</div></div></div>")
+              .append("</div></div>");
+            appendCropNoteIfNeeded(sb, r.newCropped());
+            sb.append("</div>")
               .append("</div>");
             appendTextDiffAccordion(sb, idx, oldDir, newDir, r);
             sb.append("</div>");
@@ -693,6 +715,7 @@ public class ReportGenerator {
           .append("<th data-sort='pixel' data-label='ピクセル差異(%)' onclick=\"toggleSummarySort('pixel')\">ピクセル差異(%)</th>")
           .append("<th data-sort='widthdiff' data-label='横幅の差異(px)' onclick=\"toggleSummarySort('widthdiff')\">横幅の差異(px)</th>")
           .append("<th data-sort='heightdiff' data-label='高さの差異(px)' onclick=\"toggleSummarySort('heightdiff')\">高さの差異(px)</th>")
+          .append("<th data-label='切り取り'>切り取り</th>")
           .append("<th data-sort='text' data-label='テキスト差異(行)' onclick=\"toggleSummarySort('text')\">テキスト差異(行)</th>")
           .append("</tr></thead><tbody id='summary_body'>");
         int idx = 0;
@@ -715,6 +738,7 @@ public class ReportGenerator {
               .append("<td class='num'>").append(String.format("%.2f", r.diffPercent())).append("</td>")
               .append("<td class='num'>").append(r.widthDiff()).append("</td>")
               .append("<td class='num'>").append(r.heightDiff()).append("</td>")
+              .append("<td>").append(escapeHtml(formatCropSummaryLabel(r))).append("</td>")
               .append(appendSummaryTextDiffCell(idx, r))
               .append("</tr>");
             idx++;
@@ -848,6 +872,22 @@ public class ReportGenerator {
 
     private static String formatTextDiffLabel(ImageComparator.Result r) {
         return r.textDiffLines() < 0 ? "—" : r.textDiffLines() + "行";
+    }
+
+    private static String formatCropSummaryLabel(ImageComparator.Result r) {
+        if (!r.oldCropped() && !r.newCropped()) {
+            return "—";
+        }
+        if (r.oldCropped() && r.newCropped()) {
+            return "旧・新";
+        }
+        return r.oldCropped() ? "旧" : "新";
+    }
+
+    private static void appendCropNoteIfNeeded(StringBuilder sb, boolean cropped) {
+        if (cropped) {
+            sb.append("<p class='crop-note'>切り取り</p>");
+        }
     }
 
     private static String appendSummaryTextDiffCell(int idx, ImageComparator.Result r) {

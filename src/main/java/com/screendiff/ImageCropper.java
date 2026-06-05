@@ -8,6 +8,11 @@ public final class ImageCropper {
 
     private ImageCropper() {}
 
+    /** 切り取り設定があり、画像高さが切り取り高さより大きいとき true */
+    public static boolean isCropped(int imageHeight, int cropHeight) {
+        return cropHeight > 0 && imageHeight > cropHeight;
+    }
+
     /**
      * @param cropHeight 切り取り高さ（px）。0 以下ならそのまま返す
      */

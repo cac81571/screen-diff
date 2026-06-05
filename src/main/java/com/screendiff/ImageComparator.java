@@ -21,6 +21,8 @@ public class ImageComparator {
             double diffPercent,
             int widthDiff,
             int heightDiff,
+            boolean oldCropped,
+            boolean newCropped,
             int textDiffLines,
             BufferedImage diffOverlayImage,
             String aiJudgment,
@@ -110,6 +112,8 @@ public class ImageComparator {
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
         int widthDiff = widthDiff(reportOldW, reportNewW);
         int heightDiff = heightDiff(reportOldH, reportNewH);
+        boolean oldCropped = ImageCropper.isCropped(reportOldH, cropHeight);
+        boolean newCropped = ImageCropper.isCropped(reportNewH, cropHeight);
         TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, relativePath);
 
         ImageScaleUtil.dispose(img1);
@@ -124,6 +128,8 @@ public class ImageComparator {
                 diffPercent,
                 widthDiff,
                 heightDiff,
+                oldCropped,
+                newCropped,
                 textResult.diffLineCount(),
                 diffOverlay,
                 "未判定",
@@ -143,6 +149,8 @@ public class ImageComparator {
                 result.diffPercent(),
                 result.widthDiff(),
                 result.heightDiff(),
+                result.oldCropped(),
+                result.newCropped(),
                 result.textDiffLines(),
                 null,
                 result.aiJudgment(),
