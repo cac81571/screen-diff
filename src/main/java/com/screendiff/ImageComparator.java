@@ -19,7 +19,8 @@ public class ImageComparator {
             int newWidth,
             int newHeight,
             double diffPercent,
-            long sizeDiffPixels,
+            int widthDiff,
+            int heightDiff,
             int textDiffLines,
             BufferedImage diffOverlayImage,
             String aiJudgment,
@@ -74,6 +75,11 @@ public class ImageComparator {
             newH = img2.getHeight();
         }
 
+        int reportOldW = oldW;
+        int reportOldH = oldH;
+        int reportNewW = newW;
+        int reportNewH = newH;
+
         if (cropHeight > 0) {
             BufferedImage cropped1 = ImageCropper.cropFromTop(img1, cropHeight);
             BufferedImage cropped2 = ImageCropper.cropFromTop(img2, cropHeight);
@@ -85,8 +91,6 @@ public class ImageComparator {
             }
             img1 = cropped1;
             img2 = cropped2;
-            oldH = img1.getHeight();
-            newH = img2.getHeight();
         }
 
         img1 = ImageScaleUtil.limitForComparison(img1);
@@ -104,7 +108,8 @@ public class ImageComparator {
         List<Rectangle> rectangles = comparison.createMask();
         BufferedImage diffOverlay = createDiffOverlay(rectangles, w, h);
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
-        long sizeDiffPixels = sizeDiffPixels(oldW, oldH, newW, newH);
+        int widthDiff = widthDiff(reportOldW, reportNewW);
+        int heightDiff = heightDiff(reportOldH, reportNewH);
         TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, relativePath);
 
         ImageScaleUtil.dispose(img1);
@@ -112,12 +117,13 @@ public class ImageComparator {
 
         return new Result(
                 relativePath,
-                oldW,
-                oldH,
-                newW,
-                newH,
+                reportOldW,
+                reportOldH,
+                reportNewW,
+                reportNewH,
                 diffPercent,
-                sizeDiffPixels,
+                widthDiff,
+                heightDiff,
                 textResult.diffLineCount(),
                 diffOverlay,
                 "未判定",
@@ -135,7 +141,8 @@ public class ImageComparator {
                 result.newWidth(),
                 result.newHeight(),
                 result.diffPercent(),
-                result.sizeDiffPixels(),
+                result.widthDiff(),
+                result.heightDiff(),
                 result.textDiffLines(),
                 null,
                 result.aiJudgment(),
@@ -181,9 +188,12 @@ public class ImageComparator {
         return overlay;
     }
 
-    /** 画像面積（幅×高さ）のピクセル数差 */
-    static long sizeDiffPixels(int oldW, int oldH, int newW, int newH) {
-        return Math.abs((long) oldW * oldH - (long) newW * newH);
+    static int widthDiff(int oldW, int newW) {
+        return Math.abs(oldW - newW);
+    }
+
+    static int heightDiff(int oldH, int newH) {
+        return Math.abs(oldH - newH);
     }
 
     /**
@@ -211,28 +221,6 @@ public class ImageComparator {
         }
         img = ImageScaleUtil.limitForComparison(img);
         return padToCanvas(img, canvasW, canvasH);
-    }
-
-    static BufferedImage loadForReport(File file, boolean trimMargins, int cropHeight) throws IOException {
-        BufferedImage img = ImageIO.read(file);
-        if (img == null) {
-            throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
-        }
-        if (trimMargins) {
-            BufferedImage trimmed = ImageMarginTrimmer.trim(img);
-            if (trimmed != img) {
-                ImageScaleUtil.dispose(img);
-            }
-            img = trimmed;
-        }
-        if (cropHeight > 0) {
-            BufferedImage cropped = ImageCropper.cropFromTop(img, cropHeight);
-            if (cropped != img) {
-                ImageScaleUtil.dispose(img);
-            }
-            img = cropped;
-        }
-        return ImageScaleUtil.limitForComparison(img);
     }
 
     static BufferedImage padToCanvas(BufferedImage img, int canvasW, int canvasH) {
