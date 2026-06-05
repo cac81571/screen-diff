@@ -72,9 +72,7 @@ public class ReportGenerator {
                 .diff-section h2{margin:0 0 4px;font-size:16px;font-weight:bold;line-height:1.3}
                 .pair{display:flex;gap:10px;width:100%;margin:0}
                 .pair>div{flex:1;min-width:0}
-                .panel-label{display:flex;gap:8px;align-items:baseline;margin:0 0 2px;font-size:13px;line-height:1.3}
-                .panel-side{font-weight:bold;flex-shrink:0}
-                .panel-path{color:#333;word-break:break-all}
+                .pair p{margin:0 0 2px;font-size:13px}
                 .pair.single-new>div.old-panel{display:none}
                 .pair.single-new>div.new-panel{flex:1}
                 .pair.single-old>div.new-panel{display:none}
@@ -87,7 +85,7 @@ public class ReportGenerator {
                 .img-zoom-inner .report-base{position:relative;z-index:0;width:auto;height:auto;max-width:100%;display:block;border:0;vertical-align:top}
                 .img-zoom-inner .overlay,.img-zoom-inner .blink-img{position:absolute;top:0;left:0;width:100%;height:100%;display:none;pointer-events:none;object-fit:fill}
                 .img-zoom-inner .overlay{opacity:0.5}
-                .text-diff{margin-top:8px;border:1px solid #ccc;border-radius:4px;background:#fafafa}
+                .text-diff{margin-top:8px;border:1px solid #ccc;border-radius:4px;background:#fafafa;scroll-margin-top:var(--header-offset,95px)}
                 .text-diff summary{padding:8px 12px;cursor:pointer;font-size:13px;font-weight:bold;user-select:none;list-style:disclosure-closed inside}
                 .text-diff[open] summary{border-bottom:1px solid #ddd;list-style:disclosure-open inside}
                 .text-diff-body{padding:8px 12px 12px}
@@ -103,6 +101,8 @@ public class ReportGenerator {
                 .text-diff-table tr.removed td.new{background:#fafafa;color:#999}
                 .text-diff-table tr.added td.old{background:#fafafa;color:#999}
                 .text-diff-table tr.added td.new{background:#dfd}
+                .text-diff-table .diff-inline-old{background:#faa}
+                .text-diff-table .diff-inline-new{background:#afa}
                 .report-summary{margin-bottom:16px;border:1px solid #b8c4d4;border-radius:4px;background:#fafafa;scroll-margin-top:var(--header-offset,95px)}
                 .report-summary>summary{padding:10px 14px;cursor:pointer;font-weight:bold;font-size:15px;user-select:none;list-style:disclosure-closed inside}
                 .report-summary[open]>summary{border-bottom:1px solid #ddd;list-style:disclosure-open inside}
@@ -203,11 +203,30 @@ public class ReportGenerator {
                 function showDiff(index){
                   goToDiff(index);
                 }
+                function showTextDiff(index){
+                  resetAllInlineZoom();
+                  var section=document.getElementById('diff-'+index);
+                  if(!section){return;}
+                  var textDiff=section.querySelector('details.text-diff');
+                  if(!textDiff){return;}
+                  textDiff.open=true;
+                  textDiff.scrollIntoView({behavior:'smooth',block:'start'});
+                }
                 function scrollFromHash(){
                   var hash=location.hash;
                   if(!hash){return;}
                   if(hash==='#report_summary'){
                     goToSummary();
+                    return;
+                  }
+                  if(hash.indexOf('#text-diff-')===0){
+                    var textDiff=document.getElementById(hash.substring(1));
+                    if(textDiff){
+                      var section=textDiff.closest('.diff-section');
+                      if(section&&section.dataset.index!=null){
+                        showTextDiff(parseInt(section.dataset.index,10));
+                      }
+                    }
                     return;
                   }
                   if(hash.indexOf('#diff-')!==0){return;}
@@ -507,9 +526,7 @@ public class ReportGenerator {
               .append("' data-text='").append(formatTextDiffData(r)).append("'>")
               .append("<h2>").append(formatSectionTitle(r)).append("</h2>")
               .append("<div class='pair'>")
-              .append("<div class='old-panel'>");
-            appendPanelLabel(sb, "旧", r.fileName());
-            sb.append("<div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_old_")
+              .append("<div class='old-panel'><p>旧</p><div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_old_")
               .append(idx).append("' src='").append(escapeHtmlAttr(urls.oldUrl())).append("'>")
               .append("<img id='").append(diffOldId).append("' class='overlay' src='")
               .append(escapeHtmlAttr(urls.diffUrl())).append("'>")
@@ -518,9 +535,7 @@ public class ReportGenerator {
               .append("<img id='blink_new_on_old_").append(idx).append("' class='blink-img' src='")
               .append(escapeHtmlAttr(urls.newUrl())).append("'>")
               .append("</div></div></div>")
-              .append("<div class='new-panel'>");
-            appendPanelLabel(sb, "新", r.fileName());
-            sb.append("<div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_new_")
+              .append("<div class='new-panel'><p>新</p><div class='img-wrap'><div class='img-zoom-inner'><img class='report-base' id='base_new_")
               .append(idx).append("' src='").append(escapeHtmlAttr(urls.newUrl())).append("'>")
               .append("<img id='").append(diffNewId).append("' class='overlay' src='")
               .append(escapeHtmlAttr(urls.diffUrl())).append("'>")
@@ -530,7 +545,7 @@ public class ReportGenerator {
               .append(escapeHtmlAttr(urls.oldUrl())).append("'>")
               .append("</div></div></div>")
               .append("</div>");
-            appendTextDiffAccordion(sb, oldDir, newDir, r);
+            appendTextDiffAccordion(sb, idx, oldDir, newDir, r);
             sb.append("</div>");
             idx++;
         }
@@ -700,7 +715,7 @@ public class ReportGenerator {
               .append("<td class='num'>").append(String.format("%.2f", r.diffPercent())).append("</td>")
               .append("<td class='num'>").append(r.widthDiff()).append("</td>")
               .append("<td class='num'>").append(r.heightDiff()).append("</td>")
-              .append("<td class='num'>").append(escapeHtml(formatTextDiffLabel(r))).append("</td>")
+              .append(appendSummaryTextDiffCell(idx, r))
               .append("</tr>");
             idx++;
         }
@@ -708,10 +723,10 @@ public class ReportGenerator {
     }
 
     private static void appendTextDiffAccordion(
-            StringBuilder sb, File oldDir, File newDir, ImageComparator.Result r) throws IOException {
+            StringBuilder sb, int idx, File oldDir, File newDir, ImageComparator.Result r) throws IOException {
         TextComparator.TextDiffContent content =
                 TextComparator.loadTextDiffContent(oldDir, newDir, r.fileName());
-        sb.append("<details class='text-diff'>");
+        sb.append("<details class='text-diff' id='text-diff-").append(idx).append("'>");
         if (content.available()) {
             int displayRows = TextComparator.countDiffDisplayRows(content.rows());
             sb.append("<summary>テキスト差分（差分行数 ").append(displayRows).append("行）</summary>");
@@ -777,16 +792,17 @@ public class ReportGenerator {
             case SAME -> "same";
         };
         sb.append("<tr class='").append(cssClass).append("'>")
-          .append("<td class='old'>").append(formatDiffCell(row.oldLine())).append("</td>")
-          .append("<td class='new'>").append(formatDiffCell(row.newLine())).append("</td>")
+          .append("<td class='old'>").append(formatDiffCellHtml(row.oldLine())).append("</td>")
+          .append("<td class='new'>").append(formatDiffCellHtml(row.newLine())).append("</td>")
           .append("</tr>");
     }
 
-    private static String formatDiffCell(String line) {
-        if (line == null || line.isEmpty()) {
+    /** java-diff-utils が生成した HTML をそのままセルに埋め込む */
+    private static String formatDiffCellHtml(String html) {
+        if (html == null || html.isEmpty()) {
             return "&#160;";
         }
-        return escapeHtml(line);
+        return html;
     }
 
     private static String textBaseName(String imageFileName) {
@@ -832,6 +848,21 @@ public class ReportGenerator {
 
     private static String formatTextDiffLabel(ImageComparator.Result r) {
         return r.textDiffLines() < 0 ? "—" : r.textDiffLines() + "行";
+    }
+
+    private static String appendSummaryTextDiffCell(int idx, ImageComparator.Result r) {
+        StringBuilder cell = new StringBuilder("<td class='num'>");
+        if (r.textDiffLines() < 0) {
+            cell.append(escapeHtml("—"));
+        } else {
+            String label = formatTextDiffLabel(r);
+            cell.append("<a href='#text-diff-").append(idx).append("' onclick='showTextDiff(")
+                .append(idx).append(");return false'>")
+                .append(escapeHtml(label))
+                .append("</a>");
+        }
+        cell.append("</td>");
+        return cell.toString();
     }
 
     private static String formatTextDiffCsv(int textDiffLines) {
