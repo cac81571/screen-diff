@@ -8,19 +8,28 @@ public final class ImageCropper {
 
     private ImageCropper() {}
 
-    /** 切り取り設定があり、画像高さが切り取り高さより大きいとき true */
-    public static boolean isCropped(int imageHeight, int cropHeight) {
-        return cropHeight > 0 && imageHeight > cropHeight;
+    /**
+     * 切り取りが実際に適用されたとき true。
+     *
+     * @param cropThreshold この高さより大きい画像にのみ切り取りを適用
+     * @param cropAmount    先頭から残す高さ（px）
+     */
+    public static boolean isCropped(int imageHeight, int cropThreshold, int cropAmount) {
+        return cropAmount > 0 && imageHeight > cropThreshold;
     }
 
     /**
-     * @param cropHeight 切り取り高さ（px）。0 以下ならそのまま返す
+     * @param cropThreshold この高さより大きい画像にのみ切り取りを適用
+     * @param cropAmount    先頭から残す高さ（px）。0 以下ならそのまま返す
      */
-    public static BufferedImage cropFromTop(BufferedImage image, int cropHeight) {
-        if (image == null || cropHeight <= 0) {
+    public static BufferedImage cropFromTop(BufferedImage image, int cropThreshold, int cropAmount) {
+        if (image == null || cropAmount <= 0) {
             return image;
         }
-        int height = Math.min(cropHeight, image.getHeight());
+        if (image.getHeight() <= cropThreshold) {
+            return image;
+        }
+        int height = Math.min(cropAmount, image.getHeight());
         if (height >= image.getHeight()) {
             return image;
         }

@@ -43,7 +43,8 @@ public class ImageComparator {
             int blockSize,
             int threshold,
             boolean trimMargins,
-            int cropHeight) throws IOException {
+            int cropThreshold,
+            int cropAmount) throws IOException {
         BufferedImage img1 = ImageIO.read(oldFile);
         BufferedImage img2 = ImageIO.read(newFile);
         if (img1 == null || img2 == null) {
@@ -82,9 +83,9 @@ public class ImageComparator {
         int reportNewW = newW;
         int reportNewH = newH;
 
-        if (cropHeight > 0) {
-            BufferedImage cropped1 = ImageCropper.cropFromTop(img1, cropHeight);
-            BufferedImage cropped2 = ImageCropper.cropFromTop(img2, cropHeight);
+        if (cropAmount > 0) {
+            BufferedImage cropped1 = ImageCropper.cropFromTop(img1, cropThreshold, cropAmount);
+            BufferedImage cropped2 = ImageCropper.cropFromTop(img2, cropThreshold, cropAmount);
             if (cropped1 != img1) {
                 ImageScaleUtil.dispose(img1);
             }
@@ -112,8 +113,8 @@ public class ImageComparator {
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
         int widthDiff = widthDiff(reportOldW, reportNewW);
         int heightDiff = heightDiff(reportOldH, reportNewH);
-        boolean oldCropped = ImageCropper.isCropped(reportOldH, cropHeight);
-        boolean newCropped = ImageCropper.isCropped(reportNewH, cropHeight);
+        boolean oldCropped = ImageCropper.isCropped(reportOldH, cropThreshold, cropAmount);
+        boolean newCropped = ImageCropper.isCropped(reportNewH, cropThreshold, cropAmount);
         TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, relativePath);
 
         ImageScaleUtil.dispose(img1);
@@ -208,7 +209,12 @@ public class ImageComparator {
      * レポート用に比較時と同じキャンバスへ配置する（旧・新・差分オーバーレイのピクセル位置を一致させる）。
      */
     static BufferedImage loadForReportCanvas(
-            File file, boolean trimMargins, int cropHeight, int canvasW, int canvasH) throws IOException {
+            File file,
+            boolean trimMargins,
+            int cropThreshold,
+            int cropAmount,
+            int canvasW,
+            int canvasH) throws IOException {
         BufferedImage img = ImageIO.read(file);
         if (img == null) {
             throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
@@ -220,8 +226,8 @@ public class ImageComparator {
             }
             img = trimmed;
         }
-        if (cropHeight > 0) {
-            BufferedImage cropped = ImageCropper.cropFromTop(img, cropHeight);
+        if (cropAmount > 0) {
+            BufferedImage cropped = ImageCropper.cropFromTop(img, cropThreshold, cropAmount);
             if (cropped != img) {
                 ImageScaleUtil.dispose(img);
             }

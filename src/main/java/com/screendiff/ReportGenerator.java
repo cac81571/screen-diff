@@ -11,6 +11,7 @@ import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.file.*;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.BooleanSupplier;
@@ -21,6 +22,14 @@ public class ReportGenerator {
     public enum ImageFormat {
         PNG,
         JPEG
+    }
+
+    /** HTML レポート内の画像の配置方法 */
+    public enum HtmlImagePlacement {
+        /** HTML 内に Base64 で埋め込み（単一ファイル） */
+        INLINE,
+        /** report_assets/ フォルダに書き出して参照 */
+        EXTERNAL
     }
 
     public static void writeCsv(List<ImageComparator.Result> results, File output) throws IOException {
@@ -53,8 +62,10 @@ public class ReportGenerator {
             File output,
             ImageFormat imageFormat,
             float jpegQuality,
-            int cropHeight,
+            int cropThreshold,
+            int cropAmount,
             boolean trimMargins,
+            HtmlImagePlacement imagePlacement,
             BooleanSupplier cancelled) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("""
@@ -513,7 +524,9 @@ public class ReportGenerator {
         appendHtmlSummaryAccordion(sb, results);
         sb.append("<div id='report_sections'>");
 
-        Path assetsDir = prepareAssetsDir(output);
+        Path assetsDir = imagePlacement == HtmlImagePlacement.EXTERNAL
+                ? prepareAssetsDir(output)
+                : null;
         var resultList = new ArrayList<>(results);
         int idx = 0;
         for (int i = 0; i < resultList.size(); i++) {
@@ -524,9 +537,9 @@ public class ReportGenerator {
                 throw new InterruptedIOException("中断されました");
             }
             ImageComparator.Result r = resultList.get(i);
-            HtmlAssetUrls urls = writeHtmlImageAssets(
-                    idx, r, oldDir, newDir, assetsDir, imageFormat, jpegQuality,
-                    cropHeight, trimMargins);
+            HtmlAssetUrls urls = buildHtmlImageUrls(
+                    idx, r, oldDir, newDir, imagePlacement, assetsDir, imageFormat, jpegQuality,
+                    cropThreshold, cropAmount, trimMargins);
             resultList.set(i, ImageComparator.releaseImages(r));
             r = resultList.get(i);
 
@@ -613,15 +626,17 @@ public class ReportGenerator {
         return format == ImageFormat.JPEG ? "jpg" : "png";
     }
 
-    private static HtmlAssetUrls writeHtmlImageAssets(
+    private static HtmlAssetUrls buildHtmlImageUrls(
             int idx,
             ImageComparator.Result r,
             File oldDir,
             File newDir,
+            HtmlImagePlacement placement,
             Path assetsDir,
             ImageFormat format,
             float jpegQuality,
-            int cropHeight,
+            int cropThreshold,
+            int cropAmount,
             boolean trimMargins) throws IOException {
         BufferedImage overlay = r.diffOverlayImage();
         if (overlay == null) {
@@ -630,6 +645,17 @@ public class ReportGenerator {
         int canvasW = overlay.getWidth();
         int canvasH = overlay.getHeight();
 
+        if (placement == HtmlImagePlacement.INLINE) {
+            String oldUrl = encodeSourceToDataUrl(
+                    ImageScanUtil.resolve(oldDir, r.fileName()),
+                    format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
+            String newUrl = encodeSourceToDataUrl(
+                    ImageScanUtil.resolve(newDir, r.fileName()),
+                    format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
+            String diffUrl = encodeDiffOverlayToDataUrl(r);
+            return new HtmlAssetUrls(oldUrl, newUrl, diffUrl);
+        }
+
         String ext = assetFileExt(format);
         String oldFile = String.format("%03d_old.%s", idx, ext);
         String newFile = String.format("%03d_new.%s", idx, ext);
@@ -637,13 +663,57 @@ public class ReportGenerator {
 
         writeAssetFromSource(
                 ImageScanUtil.resolve(oldDir, r.fileName()), assetsDir.resolve(oldFile),
-                format, jpegQuality, cropHeight, trimMargins, canvasW, canvasH);
+                format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
         writeAssetFromSource(
                 ImageScanUtil.resolve(newDir, r.fileName()), assetsDir.resolve(newFile),
-                format, jpegQuality, cropHeight, trimMargins, canvasW, canvasH);
+                format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
         writeAssetDiffOverlay(r, assetsDir.resolve(diffFile));
 
         return new HtmlAssetUrls(assetRelUrl(oldFile), assetRelUrl(newFile), assetRelUrl(diffFile));
+    }
+
+    private static String encodeSourceToDataUrl(
+            File source,
+            ImageFormat format,
+            float jpegQuality,
+            int cropThreshold,
+            int cropAmount,
+            boolean trimMargins,
+            int canvasW,
+            int canvasH) throws IOException {
+        BufferedImage img = ImageComparator.loadForReportCanvas(
+                source, trimMargins, cropThreshold, cropAmount, canvasW, canvasH);
+        try {
+            return encodeImageToDataUrl(img, format, jpegQuality);
+        } finally {
+            ImageScaleUtil.dispose(img);
+        }
+    }
+
+    private static String encodeDiffOverlayToDataUrl(ImageComparator.Result r) throws IOException {
+        BufferedImage overlay = r.diffOverlayImage();
+        if (overlay == null) {
+            throw new IOException("差分オーバーレイがありません: " + r.fileName());
+        }
+        return encodeImageToDataUrl(overlay, ImageFormat.PNG, 1.0f);
+    }
+
+    private static String encodeImageToDataUrl(BufferedImage img, ImageFormat format, float jpegQuality)
+            throws IOException {
+        byte[] bytes = encodeImageBytes(img, format, jpegQuality);
+        String mime = format == ImageFormat.JPEG ? "image/jpeg" : "image/png";
+        return "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes);
+    }
+
+    private static byte[] encodeImageBytes(BufferedImage img, ImageFormat format, float jpegQuality)
+            throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        if (format == ImageFormat.JPEG) {
+            writeJpegToStream(img, out, jpegQuality);
+        } else {
+            ImageIO.write(img, "png", out);
+        }
+        return out.toByteArray();
     }
 
     private static void writeAssetFromSource(
@@ -651,11 +721,13 @@ public class ReportGenerator {
             Path dest,
             ImageFormat format,
             float jpegQuality,
-            int cropHeight,
+            int cropThreshold,
+            int cropAmount,
             boolean trimMargins,
             int canvasW,
             int canvasH) throws IOException {
-        BufferedImage img = ImageComparator.loadForReportCanvas(source, trimMargins, cropHeight, canvasW, canvasH);
+        BufferedImage img = ImageComparator.loadForReportCanvas(
+                source, trimMargins, cropThreshold, cropAmount, canvasW, canvasH);
         writeImageToFile(img, dest, format, jpegQuality);
         ImageScaleUtil.dispose(img);
     }
@@ -671,13 +743,15 @@ public class ReportGenerator {
     private static void writeImageToFile(
             BufferedImage img, Path dest, ImageFormat format, float jpegQuality) throws IOException {
         if (format == ImageFormat.JPEG) {
-            writeJpegFile(img, dest, jpegQuality);
+            try (OutputStream out = Files.newOutputStream(dest)) {
+                writeJpegToStream(img, out, jpegQuality);
+            }
         } else {
             ImageIO.write(img, "png", dest.toFile());
         }
     }
 
-    private static void writeJpegFile(BufferedImage img, Path dest, float quality) throws IOException {
+    private static void writeJpegToStream(BufferedImage img, OutputStream out, float quality) throws IOException {
         BufferedImage rgb = img;
         if (img.getType() != BufferedImage.TYPE_INT_RGB) {
             rgb = new BufferedImage(img.getWidth(), img.getHeight(), BufferedImage.TYPE_INT_RGB);
@@ -691,8 +765,7 @@ public class ReportGenerator {
         ImageWriteParam param = writer.getDefaultWriteParam();
         param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
         param.setCompressionQuality(quality);
-        try (OutputStream out = Files.newOutputStream(dest);
-             ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
+        try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
             writer.setOutput(ios);
             writer.write(null, new IIOImage(rgb, null, null), param);
         } finally {

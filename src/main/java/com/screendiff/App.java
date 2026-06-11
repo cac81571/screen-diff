@@ -16,49 +16,13 @@ public class App extends JFrame {
     private static final Path HISTORY_FILE = Path.of(System.getProperty("user.home"), ".screendiff_history");
     private static final Path AI_IMAGE_PROMPT_FILE =
             Path.of(System.getProperty("user.home"), ".screendiff_ai_image_prompt");
-    /** AI(画像) プロンプト … 比較タブからコピー時に置換 */
+    /** AIプロンプト … 比較タブからコピー時に置換 */
     static final String VAR_OLD_DIR = "${OLD_DIR}";
     static final String VAR_NEW_DIR = "${NEW_DIR}";
     static final String VAR_INCLUDE_SUBFOLDERS = "${INCLUDE_SUBFOLDERS}";
     private static final String LEGACY_OLD_DIR_PLACEHOLDER = "（旧フォルダのフルパスを記載）";
     private static final String LEGACY_NEW_DIR_PLACEHOLDER = "（新フォルダのフルパスを記載）";
     private static final int MAX_HISTORY = 20;
-    private static final String DEFAULT_AI_IMAGE_PROMPT = """
-            以下のフォルダに格納された画面キャプチャ画像を、旧と新のペアで比較してください。
-
-            【比較フォルダ】
-            旧フォルダ: ${OLD_DIR}
-            新フォルダ: ${NEW_DIR}
-            サブフォルダも比較: ${INCLUDE_SUBFOLDERS}
-
-            旧・新フォルダ内でファイル名（サブフォルダがある場合は相対パスも）が一致する画像をペアとして比較してください。
-            対象拡張子: .png, .jpg, .jpeg, .bmp
-
-            確認ルール：
-
-            1. 表示されているデータ項目の差異
-            2. 項目名（ラベル）の差異
-            3. 値の差異
-            4. 表示件数の差異
-            5. 日付・数値・金額フォーマットの差異
-            6. ステータス表示の差異
-            7. ボタン・リンク・メニューの差異
-            8. レイアウト差異（重要度低）
-
-            結果は以下のCSV形式で出力してください。
-
-            画面名（ファイル名または相対パス）,判定,差異項目,旧の内容,新の内容,コメント
-
-            判定：
-            - NG（重要度：高）
-            - NG（重要度：低）
-            - 要確認
-            - OK（差異がない画面の場合）
-
-            不明な箇所は推測せず「要確認」と記載してください。
-            差異がない項目は記載不要です。
-            差異項目が0件の画面は「OK」と1行記載してください。
-            """;
 
     private final JComboBox<String> oldDirCombo = createEditableCombo();
     private final JComboBox<String> newDirCombo = createEditableCombo();
@@ -69,15 +33,20 @@ public class App extends JFrame {
     private final JSpinner blockSizeSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 20, 1));
     private final JSpinner thresholdSpinner = new JSpinner(new SpinnerNumberModel(10, 0, 255, 1));
     private final JSpinner jpegQualitySpinner = new JSpinner(new SpinnerNumberModel(50, 10, 100, 5));
-    private final JSpinner cropHeightSpinner = new JSpinner(new SpinnerNumberModel(1500, null, null, 100));
+    private final JSpinner cropThresholdSpinner = new JSpinner(new SpinnerNumberModel(3000, 1, null, 100));
+    private final JSpinner cropAmountSpinner = new JSpinner(new SpinnerNumberModel(1000, 1, null, 100));
     private final JRadioButton pngFormatRadio = new JRadioButton("PNG変換", true);
     private final JRadioButton jpegFormatRadio = new JRadioButton("JPEG変換");
+    private final JRadioButton htmlInlineRadio = new JRadioButton("HTML内に埋め込み", true);
+    private final JRadioButton htmlExternalRadio = new JRadioButton("別フォルダ (report_assets/)");
     private final ButtonGroup imageFormatGroup = new ButtonGroup();
+    private final ButtonGroup htmlImagePlacementGroup = new ButtonGroup();
     private final JLabel jpegQualityLabel = new JLabel("JPEG品質(%):");
     private final JCheckBox includeSubfoldersCheck = new JCheckBox("サブフォルダも比較する", false);
     private final JCheckBox trimMarginsCheck = new JCheckBox("四隅の余白削除", false);
     private final JCheckBox cropImageCheck = new JCheckBox("画像を先頭から切り取る", true);
-    private final JLabel cropHeightLabel = new JLabel("切り取り高さ(px):");
+    private final JLabel cropThresholdLabel = new JLabel("切取条件(px):");
+    private final JLabel cropAmountLabel = new JLabel("実際の切取量(px):");
     private final JTextArea logArea = new JTextArea(10, 50);
     private final JTextArea aiImagePromptArea = new JTextArea(20, 60);
     private JButton htmlReportButton;
@@ -99,7 +68,7 @@ public class App extends JFrame {
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("比較", createCompareTab());
         tabs.addTab("設定", createSettingsTab());
-        tabs.addTab("AI(画像)", createAiImageTab());
+        tabs.addTab("AIプロンプト", createAiImageTab());
 
         add(tabs, BorderLayout.CENTER);
 
@@ -149,7 +118,7 @@ public class App extends JFrame {
         cancelReportButton.addActionListener(e -> requestReportCancel());
         JButton copyImageAiPromptBtn = new JButton("画像比較用AIプロンプト");
         copyImageAiPromptBtn.setToolTipText(
-                "AI(画像) タブのプロンプトをコピー（" + VAR_OLD_DIR + " / " + VAR_NEW_DIR + " を比較タブのフォルダパスに置換）");
+                "AIプロンプト タブのプロンプトをコピー（" + VAR_OLD_DIR + " / " + VAR_NEW_DIR + " を比較タブのフォルダパスに置換）");
         copyImageAiPromptBtn.addActionListener(e -> copyImageAiPromptToClipboard());
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         btnPanel.add(htmlReportButton);
@@ -214,9 +183,10 @@ public class App extends JFrame {
     }
 
     private String loadImagePromptText() {
+        String defaultPrompt = AiImagePromptDefaults.loadDefault();
         if (!Files.exists(AI_IMAGE_PROMPT_FILE)) {
-            writePromptFile(AI_IMAGE_PROMPT_FILE, DEFAULT_AI_IMAGE_PROMPT);
-            return DEFAULT_AI_IMAGE_PROMPT;
+            writePromptFile(AI_IMAGE_PROMPT_FILE, defaultPrompt);
+            return defaultPrompt;
         }
         try {
             String loaded = Files.readString(AI_IMAGE_PROMPT_FILE, StandardCharsets.UTF_8);
@@ -227,12 +197,12 @@ public class App extends JFrame {
             return normalized;
         } catch (IOException ignored) {
         }
-        return DEFAULT_AI_IMAGE_PROMPT;
+        return defaultPrompt;
     }
 
-    private static String normalizeImagePromptVariables(String text) {
+    private String normalizeImagePromptVariables(String text) {
         if (text == null || text.isBlank()) {
-            return DEFAULT_AI_IMAGE_PROMPT;
+            return AiImagePromptDefaults.loadDefault();
         }
         return text.replace(LEGACY_OLD_DIR_PLACEHOLDER, VAR_OLD_DIR)
                 .replace(LEGACY_NEW_DIR_PLACEHOLDER, VAR_NEW_DIR);
@@ -316,6 +286,19 @@ public class App extends JFrame {
         c.gridwidth = 1;
 
         c.gridx = 0; c.gridy = 4; c.weightx = 0;
+        panel.add(new JLabel("HTML画像配置:"), c);
+        c.gridx = 1; c.gridwidth = 2; c.weightx = 1;
+        htmlInlineRadio.setToolTipText("画像を HTML 内に Base64 で埋め込み、report.html 1 ファイルにまとめます");
+        htmlExternalRadio.setToolTipText("画像を report_assets/ フォルダに書き出し、HTML から参照します");
+        htmlImagePlacementGroup.add(htmlInlineRadio);
+        htmlImagePlacementGroup.add(htmlExternalRadio);
+        JPanel placementPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
+        placementPanel.add(htmlInlineRadio);
+        placementPanel.add(htmlExternalRadio);
+        panel.add(placementPanel, c);
+        c.gridwidth = 1;
+
+        c.gridx = 0; c.gridy = 5; c.weightx = 0;
         panel.add(jpegQualityLabel, c);
         c.gridx = 1; c.weightx = 1;
         panel.add(jpegQualitySlider, c);
@@ -323,20 +306,30 @@ public class App extends JFrame {
         panel.add(jpegQualitySpinner, c);
         updateJpegQualityEnabled();
 
-        c.gridx = 0; c.gridy = 5; c.gridwidth = 3; c.weightx = 1;
-        cropImageCheck.setToolTipText("ON のとき、比較・レポート用に画像の先頭から指定高さを切り取ります");
-        cropHeightLabel.setToolTipText("切り取り ON 時、先頭から残す高さ（px）");
-        cropHeightSpinner.setToolTipText(cropHeightLabel.getToolTipText());
-        JPanel cropPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 0));
-        cropPanel.add(cropImageCheck);
-        cropPanel.add(cropHeightLabel);
-        cropPanel.add(cropHeightSpinner);
-        panel.add(cropPanel, c);
+        c.gridx = 0; c.gridy = 6; c.gridwidth = 3; c.weightx = 1;
+        cropImageCheck.setToolTipText("ON のとき、切取条件を満たす画像の先頭から実際の切取量まで切り取ります");
+        panel.add(cropImageCheck, c);
+        c.gridwidth = 1;
+
+        c.gridx = 0; c.gridy = 7; c.weightx = 0;
+        cropThresholdLabel.setToolTipText("画像高さがこの値より大きい場合に切り取りを適用します");
+        cropThresholdSpinner.setToolTipText(cropThresholdLabel.getToolTipText());
+        panel.add(cropThresholdLabel, c);
+        c.gridx = 1; c.gridwidth = 2; c.weightx = 1;
+        panel.add(cropThresholdSpinner, c);
+        c.gridwidth = 1;
+
+        c.gridx = 0; c.gridy = 8; c.weightx = 0;
+        cropAmountLabel.setToolTipText("切り取り時に先頭から残す高さ（px）");
+        cropAmountSpinner.setToolTipText(cropAmountLabel.getToolTipText());
+        panel.add(cropAmountLabel, c);
+        c.gridx = 1; c.gridwidth = 2; c.weightx = 1;
+        panel.add(cropAmountSpinner, c);
         c.gridwidth = 1;
         cropImageCheck.addItemListener(e -> updateCropEnabled());
         updateCropEnabled();
 
-        c.gridx = 0; c.gridy = 6; c.gridwidth = 3; c.weightx = 1;
+        c.gridx = 0; c.gridy = 9; c.gridwidth = 3; c.weightx = 1;
         c.fill = GridBagConstraints.BOTH;
         c.weighty = 1;
         panel.add(Box.createVerticalGlue(), c);
@@ -367,18 +360,30 @@ public class App extends JFrame {
 
     private void updateCropEnabled() {
         boolean enabled = cropImageCheck.isSelected();
-        cropHeightLabel.setEnabled(enabled);
-        cropHeightSpinner.setEnabled(enabled);
+        cropThresholdLabel.setEnabled(enabled);
+        cropThresholdSpinner.setEnabled(enabled);
+        cropAmountLabel.setEnabled(enabled);
+        cropAmountSpinner.setEnabled(enabled);
     }
 
-    private int getCropHeight() {
-        return cropImageCheck.isSelected() ? (int) cropHeightSpinner.getValue() : 0;
+    private int getCropThreshold() {
+        return cropImageCheck.isSelected() ? (int) cropThresholdSpinner.getValue() : 0;
+    }
+
+    private int getCropAmount() {
+        return cropImageCheck.isSelected() ? (int) cropAmountSpinner.getValue() : 0;
     }
 
     private ReportGenerator.ImageFormat getImageFormat() {
         return jpegFormatRadio.isSelected()
                 ? ReportGenerator.ImageFormat.JPEG
                 : ReportGenerator.ImageFormat.PNG;
+    }
+
+    private ReportGenerator.HtmlImagePlacement getHtmlImagePlacement() {
+        return htmlExternalRadio.isSelected()
+                ? ReportGenerator.HtmlImagePlacement.EXTERNAL
+                : ReportGenerator.HtmlImagePlacement.INLINE;
     }
 
     private static JComboBox<String> createEditableCombo() {
@@ -442,7 +447,8 @@ public class App extends JFrame {
             int blockSize,
             int threshold,
             boolean trimMargins,
-            int cropHeight) {}
+            int cropThreshold,
+            int cropAmount) {}
 
     @FunctionalInterface
     private interface ReportTask {
@@ -511,11 +517,16 @@ public class App extends JFrame {
                 + ", サブフォルダ=" + (includeSubfolders ? "ON" : "OFF")
                 + ", 余白削除=" + (trimMargins ? "ON" : "OFF")
                 + ", 画像出力=" + (jpegFormatRadio.isSelected() ? "JPEG変換" : "PNG変換")
+                + ", HTML画像配置=" + (htmlExternalRadio.isSelected() ? "別フォルダ" : "HTML内")
                 + ", 先頭切り取り=" + (cropImageCheck.isSelected() ? "ON" : "OFF")
-                + (cropImageCheck.isSelected() ? ", 高さ=" + cropHeightSpinner.getValue() + "px" : ""));
+                + (cropImageCheck.isSelected()
+                ? ", 切取条件=" + cropThresholdSpinner.getValue() + "px, 切取量="
+                        + cropAmountSpinner.getValue() + "px"
+                : ""));
 
         return new ComparisonStart(
-                oldDir, newDir, outDir, relativePaths, blockSize, threshold, trimMargins, getCropHeight());
+                oldDir, newDir, outDir, relativePaths, blockSize, threshold, trimMargins,
+                getCropThreshold(), getCropAmount());
     }
 
     private boolean compareImages(
@@ -544,7 +555,8 @@ public class App extends JFrame {
                         start.blockSize(),
                         start.threshold(),
                         start.trimMargins(),
-                        start.cropHeight());
+                        start.cropThreshold(),
+                        start.cropAmount());
                 results.add(result);
                 String line = result.fileName() + " : 差分 " + String.format("%.2f%%", result.diffPercent());
                 if (result.textDiffLines() >= 0) {
@@ -684,8 +696,10 @@ public class App extends JFrame {
 
     private void createHtmlReport() {
         ReportGenerator.ImageFormat imageFormat = getImageFormat();
+        ReportGenerator.HtmlImagePlacement imagePlacement = getHtmlImagePlacement();
         float jpegQuality = jpegQualitySlider.getValue() / 100.0f;
-        int cropHeight = getCropHeight();
+        int cropThreshold = getCropThreshold();
+        int cropAmount = getCropAmount();
         runReportTask((ctx, cancelled) -> {
             if (cancelled.getAsBoolean()) {
                 throw new InterruptedIOException("中断されました");
@@ -702,10 +716,15 @@ public class App extends JFrame {
                     htmlFile,
                     imageFormat,
                     jpegQuality,
-                    cropHeight,
+                    cropThreshold,
+                    cropAmount,
                     ctx.trimMargins(),
+                    imagePlacement,
                     cancelled);
-            log("HTML出力: " + htmlFile.getAbsolutePath());
+            log("HTML出力: " + htmlFile.getAbsolutePath()
+                    + (imagePlacement == ReportGenerator.HtmlImagePlacement.INLINE
+                    ? "（画像は HTML 内に埋め込み）"
+                    : "（画像は report_assets/ に出力）"));
             return "HTMLレポート出力完了";
         });
     }
@@ -742,6 +761,39 @@ public class App extends JFrame {
         return t.getClass().getSimpleName();
     }
 
+    private void loadCropSettings(Properties props) {
+        int legacyHeight = 0;
+        if (props.containsKey("cropHeight")) {
+            legacyHeight = Integer.parseInt(props.getProperty("cropHeight", "1500"));
+        } else if (props.containsKey("splitHeadHeight")) {
+            legacyHeight = Integer.parseInt(props.getProperty("splitHeadHeight", "1500"));
+        } else if (props.containsKey("maxDisplayHeight")) {
+            int legacyMaxH = Integer.parseInt(props.getProperty("maxDisplayHeight", "3000"));
+            legacyHeight = legacyMaxH > 0 ? legacyMaxH / 2 : 1500;
+        }
+
+        if (props.containsKey("cropThreshold")) {
+            cropThresholdSpinner.setValue(Integer.parseInt(props.getProperty("cropThreshold", "3000")));
+        } else if (legacyHeight > 0) {
+            cropThresholdSpinner.setValue(legacyHeight);
+        }
+
+        if (props.containsKey("cropAmount")) {
+            cropAmountSpinner.setValue(Integer.parseInt(props.getProperty("cropAmount", "1000")));
+        } else if (legacyHeight > 0) {
+            cropAmountSpinner.setValue(legacyHeight);
+        }
+
+        if (props.containsKey("cropImage")) {
+            cropImageCheck.setSelected(Boolean.parseBoolean(props.getProperty("cropImage")));
+        } else if (props.containsKey("splitDisplay")) {
+            cropImageCheck.setSelected(Boolean.parseBoolean(props.getProperty("splitDisplay")));
+        } else if (props.containsKey("maxDisplayHeight")) {
+            int legacyMaxH = Integer.parseInt(props.getProperty("maxDisplayHeight", "3000"));
+            cropImageCheck.setSelected(legacyMaxH > 0);
+        }
+    }
+
     private void loadHistory() {
         if (!Files.exists(HISTORY_FILE)) return;
         try {
@@ -758,24 +810,14 @@ public class App extends JFrame {
             } else {
                 pngFormatRadio.setSelected(true);
             }
+            if ("external".equals(props.getProperty("htmlImagePlacement", "inline"))) {
+                htmlExternalRadio.setSelected(true);
+            } else {
+                htmlInlineRadio.setSelected(true);
+            }
             includeSubfoldersCheck.setSelected(Boolean.parseBoolean(props.getProperty("includeSubfolders", "false")));
             trimMarginsCheck.setSelected(Boolean.parseBoolean(props.getProperty("trimMargins", "false")));
-            if (props.containsKey("cropHeight")) {
-                cropHeightSpinner.setValue(Integer.parseInt(props.getProperty("cropHeight", "1500")));
-            } else if (props.containsKey("splitHeadHeight")) {
-                cropHeightSpinner.setValue(Integer.parseInt(props.getProperty("splitHeadHeight", "1500")));
-            } else {
-                int legacyMaxH = Integer.parseInt(props.getProperty("maxDisplayHeight", "3000"));
-                cropHeightSpinner.setValue(legacyMaxH > 0 ? legacyMaxH / 2 : 1500);
-            }
-            if (props.containsKey("cropImage")) {
-                cropImageCheck.setSelected(Boolean.parseBoolean(props.getProperty("cropImage")));
-            } else if (props.containsKey("splitDisplay")) {
-                cropImageCheck.setSelected(Boolean.parseBoolean(props.getProperty("splitDisplay")));
-            } else {
-                int legacyMaxH = Integer.parseInt(props.getProperty("maxDisplayHeight", "3000"));
-                cropImageCheck.setSelected(legacyMaxH > 0);
-            }
+            loadCropSettings(props);
             updateCropEnabled();
             updateJpegQualityEnabled();
         } catch (IOException ignored) {}
@@ -791,10 +833,12 @@ public class App extends JFrame {
             props.setProperty("threshold", String.valueOf(thresholdSlider.getValue()));
             props.setProperty("jpegQuality", String.valueOf(jpegQualitySlider.getValue()));
             props.setProperty("imageFormat", jpegFormatRadio.isSelected() ? "jpeg" : "png");
+            props.setProperty("htmlImagePlacement", htmlExternalRadio.isSelected() ? "external" : "inline");
             props.setProperty("includeSubfolders", String.valueOf(includeSubfoldersCheck.isSelected()));
             props.setProperty("trimMargins", String.valueOf(trimMarginsCheck.isSelected()));
             props.setProperty("cropImage", String.valueOf(cropImageCheck.isSelected()));
-            props.setProperty("cropHeight", String.valueOf(cropHeightSpinner.getValue()));
+            props.setProperty("cropThreshold", String.valueOf(cropThresholdSpinner.getValue()));
+            props.setProperty("cropAmount", String.valueOf(cropAmountSpinner.getValue()));
             props.store(Files.newBufferedWriter(HISTORY_FILE), "Screen Diff History");
             saveImagePrompt();
         } catch (IOException ignored) {}
