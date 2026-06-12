@@ -1,17 +1,34 @@
 package com.screendiff;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-/** 画像 N 枚 : テキスト 1 ファイルの比較単位（末尾 _xxx のバリアント名） */
+/**
+ * 画像のグループ化と旧・新フォルダ間のマッチング。
+ * <ul>
+ *   <li>ファイル名形式 … {@code 数字(英数字)_ファイル名}</li>
+ *   <li>先頭の {@code 数字(英数字)_} が同じ画像は1グループ（縦結合）</li>
+ *   <li>マッチング … {@code 数字(英数字)_} の括弧部分のみ除去（例: {@code 001(a)_sampleA.png} → {@code 001_sampleA.png}）</li>
+ *   <li>テキスト … {@code 数字(英数字)_} の括弧部分のみ除去（例: {@code 1(a)_login(1).png} → {@code 1_login(1).txt}）</li>
+ * </ul>
+ */
 final class ImageTextGroupUtil {
+
+    private static final Pattern GROUP_PREFIX = Pattern.compile("^(\\d+\\([a-zA-Z0-9]+\\)_)");
+    /** テキスト名用 … {@code 1(a)_} → {@code 1_}（括弧内のみ除去） */
+    private static final Pattern TEXT_GROUP_PREFIX = Pattern.compile("^(\\d+)\\([a-zA-Z0-9]+\\)_");
+
+    record ImageGroup(String matchKey, String sortKey, List<String> memberPaths) {}
 
     record ComparisonUnit(
             String displayName,
-            String textBaseName,
             List<String> oldImagePaths,
             List<String> newImagePaths) {
 
@@ -23,125 +40,124 @@ final class ImageTextGroupUtil {
     private ImageTextGroupUtil() {}
 
     static List<ComparisonUnit> buildComparisonUnits(List<String> oldPaths, List<String> newPaths) {
-        Set<String> assignedTextBases = new HashSet<>();
+        List<ImageGroup> oldGroups = mergeGroupsByMatchKey(buildGroups(oldPaths));
+        Map<String, Deque<ImageGroup>> newByMatchKey = new LinkedHashMap<>();
+        for (ImageGroup group : mergeGroupsByMatchKey(buildGroups(newPaths))) {
+            newByMatchKey.computeIfAbsent(group.matchKey(), k -> new ArrayDeque<>()).add(group);
+        }
+
         List<ComparisonUnit> units = new ArrayList<>();
-
-        for (String path : oldPaths) {
-            String textBase = resolveTextBase(path, oldPaths, newPaths);
-            if (assignedTextBases.contains(textBase)) {
+        for (ImageGroup oldGroup : oldGroups) {
+            Deque<ImageGroup> candidates = newByMatchKey.get(oldGroup.matchKey());
+            if (candidates == null || candidates.isEmpty()) {
                 continue;
             }
-            assignedTextBases.add(textBase);
-
-            String dir = directoryOf(textBase);
-            String baseName = baseNameFromTextBase(textBase);
-            List<String> oldMembers = collectGroupPaths(oldPaths, dir, baseName);
-            List<String> newMembers = collectGroupPaths(newPaths, dir, baseName);
-            if (oldMembers.isEmpty() || newMembers.isEmpty()) {
-                continue;
-            }
+            ImageGroup newGroup = candidates.removeFirst();
             units.add(new ComparisonUnit(
-                    displayName(textBase, oldMembers, newMembers),
-                    textBase,
-                    List.copyOf(oldMembers),
-                    List.copyOf(newMembers)));
+                    oldGroup.matchKey(),
+                    List.copyOf(oldGroup.memberPaths()),
+                    List.copyOf(newGroup.memberPaths())));
         }
         return units;
     }
 
-    /** 旧・新のいずれかで 2 枚以上、または合計 2 枚以上なら同一 textBase にまとめる */
-    static String resolveTextBase(String path, List<String> oldPaths, List<String> newPaths) {
-        String dir = directoryOf(path);
-        String fileName = fileNameOf(path);
-        String fullName = nameWithoutExtension(fileName);
-        String stripped = stripVariantSuffix(fileName);
-
-        if (stripped != null && groupSize(oldPaths, newPaths, dir, stripped) >= 2) {
-            return textBaseRelativePath(dir, stripped);
+    static List<String> listUnmatchedOldMatchKeys(List<String> oldPaths, List<String> newPaths) {
+        List<ImageGroup> oldGroups = mergeGroupsByMatchKey(buildGroups(oldPaths));
+        Map<String, Deque<ImageGroup>> newByMatchKey = new LinkedHashMap<>();
+        for (ImageGroup group : mergeGroupsByMatchKey(buildGroups(newPaths))) {
+            newByMatchKey.computeIfAbsent(group.matchKey(), k -> new ArrayDeque<>()).add(group);
         }
-        if (groupSize(oldPaths, newPaths, dir, fullName) >= 2) {
-            return textBaseRelativePath(dir, fullName);
-        }
-        return textBaseRelativePath(dir, fullName);
-    }
 
-    static List<String> collectGroupPaths(List<String> paths, String dir, String baseName) {
-        List<String> members = new ArrayList<>();
-        for (String path : paths) {
-            if (!directoryOf(path).equals(dir)) {
+        List<String> unmatched = new ArrayList<>();
+        for (ImageGroup oldGroup : oldGroups) {
+            Deque<ImageGroup> candidates = newByMatchKey.get(oldGroup.matchKey());
+            if (candidates == null || candidates.isEmpty()) {
+                unmatched.add(oldGroup.matchKey());
                 continue;
             }
-            if (belongsToGroup(fileNameOf(path), baseName)) {
-                members.add(path);
+            candidates.removeFirst();
+        }
+        return unmatched;
+    }
+
+    static List<ImageGroup> buildGroups(List<String> sortedRelativePaths) {
+        Map<String, ImageGroup> groupByKey = new LinkedHashMap<>();
+        List<ImageGroup> groups = new ArrayList<>();
+
+        for (String path : sortedRelativePaths) {
+            String groupKey = groupKey(path);
+            ImageGroup group = groupByKey.get(groupKey);
+            if (group == null) {
+                group = new ImageGroup(matchKey(path), path, new ArrayList<>());
+                groupByKey.put(groupKey, group);
+                groups.add(group);
             }
+            group.memberPaths().add(path);
         }
-        Collections.sort(members);
-        return members;
+        return groups;
     }
 
-    private static int groupSize(List<String> oldPaths, List<String> newPaths, String dir, String baseName) {
-        return collectGroupPaths(oldPaths, dir, baseName).size()
-                + collectGroupPaths(newPaths, dir, baseName).size();
-    }
-
-    private static boolean belongsToGroup(String fileName, String baseName) {
-        String name = nameWithoutExtension(fileName);
-        if (name.equals(baseName)) {
-            return true;
+    /** 同一マッチキー（{@code 001(a)_} と {@code 001(b)_} など）のグループを縦結合用に統合 */
+    private static List<ImageGroup> mergeGroupsByMatchKey(List<ImageGroup> groups) {
+        Map<String, ImageGroup> merged = new LinkedHashMap<>();
+        for (ImageGroup group : groups) {
+            merged.merge(group.matchKey(), group, ImageTextGroupUtil::combineGroups);
         }
-        if (!name.startsWith(baseName + "_")) {
-            return false;
-        }
-        String stripped = stripVariantSuffix(fileName);
-        return stripped != null && stripped.equals(baseName);
+        return new ArrayList<>(merged.values());
     }
 
-    private static String displayName(String textBase, List<String> oldMembers, List<String> newMembers) {
-        if (oldMembers.size() <= 1 && newMembers.size() <= 1) {
-            return oldMembers.get(0);
-        }
-        return textBase + ".png";
+    private static ImageGroup combineGroups(ImageGroup left, ImageGroup right) {
+        List<String> paths = new ArrayList<>(left.memberPaths());
+        paths.addAll(right.memberPaths());
+        Collections.sort(paths);
+        return new ImageGroup(left.matchKey(), paths.get(0), List.copyOf(paths));
     }
 
-    static String baseNameFromTextBase(String textBase) {
-        int slash = textBase.lastIndexOf('/');
-        return slash >= 0 ? textBase.substring(slash + 1) : textBase;
+    /** マッチング用キー（{@code 001(a)_sampleA.png} → {@code 001_sampleA.png}） */
+    static String matchKey(String relativePath) {
+        int slash = relativePath.lastIndexOf('/');
+        String dir = slash >= 0 ? relativePath.substring(0, slash + 1) : "";
+        String fileName = slash >= 0 ? relativePath.substring(slash + 1) : relativePath;
+        return dir + normalizeVariantPrefix(fileName);
     }
 
-    static String dirFromTextBase(String textBase) {
-        int slash = textBase.lastIndexOf('/');
-        return slash >= 0 ? textBase.substring(0, slash) : "";
-    }
-
-    /** 001_sampleA_a.png → 001_sampleA（末尾 _xxx を除去）。該当なしなら null */
-    static String stripVariantSuffix(String fileName) {
-        String name = nameWithoutExtension(fileName);
-        int underscore = name.lastIndexOf('_');
-        if (underscore <= 0 || underscore >= name.length() - 1) {
-            return null;
-        }
-        return name.substring(0, underscore);
-    }
-
-    static String fileNameOf(String relativePath) {
-        int slash = Math.max(relativePath.lastIndexOf('/'), relativePath.lastIndexOf('\\'));
-        return slash >= 0 ? relativePath.substring(slash + 1) : relativePath;
-    }
-
-    static String directoryOf(String relativePath) {
-        int slash = Math.max(relativePath.lastIndexOf('/'), relativePath.lastIndexOf('\\'));
-        return slash >= 0 ? relativePath.substring(0, slash) : "";
-    }
-
-    static String nameWithoutExtension(String fileName) {
+    static String textBaseNameForImage(String imageRelativePath) {
+        int slash = imageRelativePath.lastIndexOf('/');
+        String dir = slash >= 0 ? imageRelativePath.substring(0, slash + 1) : "";
+        String fileName = slash >= 0 ? imageRelativePath.substring(slash + 1) : imageRelativePath;
         int dot = fileName.lastIndexOf('.');
-        return dot > 0 ? fileName.substring(0, dot) : fileName;
+        String base = dot > 0 ? fileName.substring(0, dot) : fileName;
+        return dir + normalizeVariantPrefix(base);
     }
 
-    private static String textBaseRelativePath(String dir, String baseName) {
-        if (dir.isEmpty()) {
-            return baseName;
+    /** {@code 001(a)_sampleA.png} → {@code 001_sampleA.png}、{@code 001_sampleA.png} はそのまま */
+    static String normalizeVariantPrefix(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        if (dot <= 0) {
+            return TEXT_GROUP_PREFIX.matcher(fileName).replaceFirst("$1_");
         }
-        return dir + "/" + baseName;
+        String base = fileName.substring(0, dot);
+        String ext = fileName.substring(dot);
+        return TEXT_GROUP_PREFIX.matcher(base).replaceFirst("$1_") + ext;
+    }
+
+    static String stripGroupPrefix(String fileName) {
+        return GROUP_PREFIX.matcher(fileName).replaceFirst("");
+    }
+
+    static String extractGroupPrefix(String fileName) {
+        Matcher matcher = GROUP_PREFIX.matcher(fileName);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private static String groupKey(String relativePath) {
+        int slash = relativePath.lastIndexOf('/');
+        String dir = slash >= 0 ? relativePath.substring(0, slash + 1) : "";
+        String fileName = slash >= 0 ? relativePath.substring(slash + 1) : relativePath;
+        String prefix = extractGroupPrefix(fileName);
+        if (prefix.isEmpty()) {
+            return relativePath;
+        }
+        return dir + prefix;
     }
 }

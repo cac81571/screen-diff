@@ -12,7 +12,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 画像に対応する .txt を比較する（java-diff-utils 使用）。 */
+/** 画像ファイル名（拡張子 .txt）に対応するテキストを比較する（java-diff-utils 使用）。 */
 public final class TextComparator {
 
     private static final DiffRowGenerator DIFF_ROW_GENERATOR = DiffRowGenerator.create()
@@ -40,25 +40,52 @@ public final class TextComparator {
 
     private TextComparator() {}
 
-    public static TextResult compare(File oldDir, File newDir, String textBaseName) throws IOException {
-        Path oldTxt = textPath(oldDir, textBaseName);
-        Path newTxt = textPath(newDir, textBaseName);
-        if (!Files.isRegularFile(oldTxt) || !Files.isRegularFile(newTxt)) {
+    public static TextResult compareMembers(
+            File oldDir,
+            File newDir,
+            List<String> oldImagePaths,
+            List<String> newImagePaths) throws IOException {
+        List<LineDiffRow> rows = diffMemberRows(oldDir, newDir, oldImagePaths, newImagePaths);
+        if (rows == null) {
             return new TextResult(-1, false);
         }
-        List<LineDiffRow> rows = diffLines(readLines(oldTxt), readLines(newTxt));
         return new TextResult(countDiffDisplayRows(rows), true);
     }
 
-    public static TextDiffContent loadTextDiffContent(File oldDir, File newDir, String textBaseName)
-            throws IOException {
-        Path oldTxt = textPath(oldDir, textBaseName);
-        Path newTxt = textPath(newDir, textBaseName);
-        if (!Files.isRegularFile(oldTxt) || !Files.isRegularFile(newTxt)) {
+    public static TextDiffContent loadTextDiffContentForMembers(
+            File oldDir,
+            File newDir,
+            List<String> oldImagePaths,
+            List<String> newImagePaths) throws IOException {
+        List<LineDiffRow> rows = diffMemberRows(oldDir, newDir, oldImagePaths, newImagePaths);
+        if (rows == null) {
             return TextDiffContent.unavailable();
         }
-        List<LineDiffRow> rows = diffLines(readLines(oldTxt), readLines(newTxt));
         return new TextDiffContent(true, countDiffDisplayRows(rows), rows);
+    }
+
+    private static List<LineDiffRow> diffMemberRows(
+            File oldDir,
+            File newDir,
+            List<String> oldImagePaths,
+            List<String> newImagePaths) throws IOException {
+        int pairCount = Math.min(oldImagePaths.size(), newImagePaths.size());
+        if (pairCount == 0) {
+            return null;
+        }
+
+        List<LineDiffRow> merged = new ArrayList<>();
+        boolean anyAvailable = false;
+        for (int i = 0; i < pairCount; i++) {
+            Path oldTxt = textPath(oldDir, ImageTextGroupUtil.textBaseNameForImage(oldImagePaths.get(i)));
+            Path newTxt = textPath(newDir, ImageTextGroupUtil.textBaseNameForImage(newImagePaths.get(i)));
+            if (!Files.isRegularFile(oldTxt) || !Files.isRegularFile(newTxt)) {
+                continue;
+            }
+            anyAvailable = true;
+            merged.addAll(diffLines(readLines(oldTxt), readLines(newTxt)));
+        }
+        return anyAvailable ? merged : null;
     }
 
     /** 差分行数（削除・追加・変更は各1行。HTML 表示・サマリで共通） */

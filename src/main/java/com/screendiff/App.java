@@ -564,7 +564,8 @@ public class App extends JFrame {
                         start.oldDir(),
                         start.newDir(),
                         unit.displayName(),
-                        unit.textBaseName(),
+                        unit.oldImagePaths(),
+                        unit.newImagePaths(),
                         start.blockSize(),
                         start.threshold());
                 results.add(result);
@@ -582,7 +583,7 @@ public class App extends JFrame {
                 logError(unit.displayName() + " : 比較エラー", t);
             }
         }
-        logSkippedGroups(start.relativeImagePaths(), start.newRelativeImagePaths(), units);
+        logSkippedGroups(start.relativeImagePaths(), start.newRelativeImagePaths());
         if (results.isEmpty()) {
             log("比較対象がありません。");
         }
@@ -635,31 +636,9 @@ public class App extends JFrame {
         return " （旧" + oldCount + "枚+新" + newCount + "枚結合）";
     }
 
-    private void logSkippedGroups(
-            List<String> oldPaths,
-            List<String> newPaths,
-            List<ImageTextGroupUtil.ComparisonUnit> units) {
-        Set<String> compared = new HashSet<>();
-        for (ImageTextGroupUtil.ComparisonUnit unit : units) {
-            compared.add(unit.textBaseName());
-        }
-        Set<String> checked = new HashSet<>();
-        for (String path : oldPaths) {
-            String textBase = ImageTextGroupUtil.resolveTextBase(path, oldPaths, newPaths);
-            if (checked.contains(textBase)) {
-                continue;
-            }
-            checked.add(textBase);
-            if (compared.contains(textBase)) {
-                continue;
-            }
-            List<String> newMembers = ImageTextGroupUtil.collectGroupPaths(
-                    newPaths,
-                    ImageTextGroupUtil.dirFromTextBase(textBase),
-                    ImageTextGroupUtil.baseNameFromTextBase(textBase));
-            if (newMembers.isEmpty()) {
-                log(textBase + " : 新フォルダに対応画像がありません。スキップ。");
-            }
+    private void logSkippedGroups(List<String> oldPaths, List<String> newPaths) {
+        for (String matchKey : ImageTextGroupUtil.listUnmatchedOldMatchKeys(oldPaths, newPaths)) {
+            log(matchKey + " : 新フォルダに対応画像がありません。スキップ。");
         }
     }
 

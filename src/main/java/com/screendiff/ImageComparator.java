@@ -16,6 +16,8 @@ public class ImageComparator {
 
     public record Result(
             String fileName,
+            List<String> oldMemberPaths,
+            List<String> newMemberPaths,
             int oldWidth,
             int oldHeight,
             int newWidth,
@@ -26,7 +28,6 @@ public class ImageComparator {
             boolean oldCropped,
             boolean newCropped,
             int textDiffLines,
-            String textBaseName,
             BufferedImage diffOverlayImage,
             String aiJudgment,
             BufferedImage reportOldImage,
@@ -49,7 +50,8 @@ public class ImageComparator {
             File oldRoot,
             File newRoot,
             String displayName,
-            String textBaseName,
+            List<String> oldMemberPaths,
+            List<String> newMemberPaths,
             int blockSize,
             int threshold) throws IOException {
         BufferedImage img1 = ImageScaleUtil.limitForComparison(oldImage);
@@ -67,10 +69,13 @@ public class ImageComparator {
         List<Rectangle> rectangles = comparison.createMask();
         BufferedImage diffOverlay = createDiffOverlay(rectangles, w, h);
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
-        TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, textBaseName);
+        TextComparator.TextResult textResult = TextComparator.compareMembers(
+                oldRoot, newRoot, oldMemberPaths, newMemberPaths);
 
         return new Result(
                 displayName,
+                List.copyOf(oldMemberPaths),
+                List.copyOf(newMemberPaths),
                 reportOldW,
                 reportOldH,
                 reportNewW,
@@ -81,7 +86,6 @@ public class ImageComparator {
                 oldCropped,
                 newCropped,
                 textResult.diffLineCount(),
-                textBaseName,
                 diffOverlay,
                 "未判定",
                 reportOld,
@@ -133,6 +137,8 @@ public class ImageComparator {
         ImageScaleUtil.dispose(result.reportNewImage());
         return new Result(
                 result.fileName(),
+                result.oldMemberPaths(),
+                result.newMemberPaths(),
                 result.oldWidth(),
                 result.oldHeight(),
                 result.newWidth(),
@@ -143,7 +149,6 @@ public class ImageComparator {
                 result.oldCropped(),
                 result.newCropped(),
                 result.textDiffLines(),
-                result.textBaseName(),
                 null,
                 result.aiJudgment(),
                 null,

@@ -865,13 +865,14 @@ public class ReportGenerator {
 
     private static void appendTextDiffAccordion(
             StringBuilder sb, int idx, File oldDir, File newDir, ImageComparator.Result r) throws IOException {
-        TextComparator.TextDiffContent content =
-                TextComparator.loadTextDiffContent(oldDir, newDir, r.textBaseName());
+        TextComparator.TextDiffContent content = TextComparator.loadTextDiffContentForMembers(
+                oldDir, newDir, r.oldMemberPaths(), r.newMemberPaths());
+        String expectedTextNames = formatExpectedTextNames(r);
         sb.append("<details class='text-diff' id='text-diff-").append(idx).append("'>");
         if (content.available()) {
             int displayRows = TextComparator.countDiffDisplayRows(content.rows());
-            sb.append("<summary>テキスト差分（").append(escapeHtml(r.textBaseName()))
-              .append(".txt … 差分行数 ").append(displayRows).append("行）</summary>");
+            sb.append("<summary>テキスト差分（").append(escapeHtml(expectedTextNames))
+              .append(" … 差分行数 ").append(displayRows).append("行）</summary>");
             sb.append("<div class='text-diff-body'>");
             if (content.rows().isEmpty()) {
                 sb.append("<p class='text-diff-empty'>(空)</p>");
@@ -880,13 +881,28 @@ public class ReportGenerator {
             }
             sb.append("</div>");
         } else {
-            sb.append("<summary>テキスト差分（").append(escapeHtml(r.textBaseName())).append(".txt … —）</summary>");
+            sb.append("<summary>テキスト差分（").append(escapeHtml(expectedTextNames)).append(" … —）</summary>");
             sb.append("<div class='text-diff-body'><p class='text-diff-empty'>")
               .append("旧・新フォルダに .txt がありません（")
-              .append(escapeHtml(r.textBaseName()))
-              .append(".txt）</p></div>");
+              .append(escapeHtml(expectedTextNames))
+              .append("）</p></div>");
         }
         sb.append("</details>");
+    }
+
+    private static String formatExpectedTextNames(ImageComparator.Result r) {
+        int pairCount = Math.min(r.oldMemberPaths().size(), r.newMemberPaths().size());
+        if (pairCount == 0) {
+            return "—";
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < pairCount; i++) {
+            if (i > 0) {
+                names.append(", ");
+            }
+            names.append(ImageTextGroupUtil.textBaseNameForImage(r.oldMemberPaths().get(i))).append(".txt");
+        }
+        return names.toString();
     }
 
     /** HTML 用: 一致行は省略し、差分行のみ表示する（ブロック間は省略サマリ行を挿入） */
