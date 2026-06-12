@@ -5,6 +5,7 @@ import com.formdev.flatlaf.FlatLightLaf;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -444,6 +445,7 @@ public class App extends JFrame {
             File newDir,
             File outDir,
             List<String> relativeImagePaths,
+            List<String> newRelativeImagePaths,
             int blockSize,
             int threshold,
             boolean trimMargins,
@@ -489,10 +491,12 @@ public class App extends JFrame {
 
         boolean includeSubfolders = includeSubfoldersCheck.isSelected();
         List<String> relativePaths;
+        List<String> newRelativePaths;
         try {
             relativePaths = ImageScanUtil.listRelativeImagePaths(oldDir, includeSubfolders);
+            newRelativePaths = ImageScanUtil.listRelativeImagePaths(newDir, includeSubfolders);
         } catch (IOException e) {
-            showError("旧フォルダの画像一覧を取得できません: " + e.getMessage());
+            showError("画像一覧を取得できません: " + e.getMessage());
             return null;
         }
         if (relativePaths.isEmpty()) {
@@ -525,7 +529,7 @@ public class App extends JFrame {
                 : ""));
 
         return new ComparisonStart(
-                oldDir, newDir, outDir, relativePaths, blockSize, threshold, trimMargins,
+                oldDir, newDir, outDir, relativePaths, newRelativePaths, blockSize, threshold, trimMargins,
                 getCropThreshold(), getCropAmount());
     }
 
@@ -533,46 +537,130 @@ public class App extends JFrame {
             ComparisonStart start,
             List<ImageComparator.Result> results,
             java.util.function.BooleanSupplier cancelled) {
-        for (String relativePath : start.relativeImagePaths()) {
+        List<ImageTextGroupUtil.ComparisonUnit> units = ImageTextGroupUtil.buildComparisonUnits(
+                start.relativeImagePaths(), start.newRelativeImagePaths());
+        for (ImageTextGroupUtil.ComparisonUnit unit : units) {
             if (cancelled.getAsBoolean()) {
                 log("処理を中断しました。");
                 releaseResultImages(results);
                 return false;
             }
-            File oldFile = ImageScanUtil.resolve(start.oldDir(), relativePath);
-            File newFile = ImageScanUtil.resolve(start.newDir(), relativePath);
-            if (!newFile.isFile()) {
-                log(relativePath + " : 新フォルダに存在しません。スキップ。");
-                continue;
-            }
             try {
+                CombinedSide oldSide = buildCombinedSide(
+                        start.oldDir(), unit.oldImagePaths(), start.trimMargins(),
+                        start.cropThreshold(), start.cropAmount());
+                CombinedSide newSide = buildCombinedSide(
+                        start.newDir(), unit.newImagePaths(), start.trimMargins(),
+                        start.cropThreshold(), start.cropAmount());
                 var result = ImageComparator.compare(
-                        oldFile,
-                        newFile,
+                        oldSide.image(),
+                        newSide.image(),
+                        oldSide.reportWidth(),
+                        oldSide.reportHeight(),
+                        oldSide.anyCropped(),
+                        newSide.reportWidth(),
+                        newSide.reportHeight(),
+                        newSide.anyCropped(),
                         start.oldDir(),
                         start.newDir(),
-                        relativePath,
+                        unit.displayName(),
+                        unit.textBaseName(),
                         start.blockSize(),
-                        start.threshold(),
-                        start.trimMargins(),
-                        start.cropThreshold(),
-                        start.cropAmount());
+                        start.threshold());
                 results.add(result);
                 String line = result.fileName() + " : 差分 " + String.format("%.2f%%", result.diffPercent());
                 if (result.textDiffLines() >= 0) {
                     line += ", テキスト " + result.textDiffLines() + "行";
                 }
+                if (unit.isCombined()) {
+                    line += combineCountLabel(unit.oldImagePaths().size(), unit.newImagePaths().size());
+                }
                 log(line);
             } catch (OutOfMemoryError oom) {
-                logError(relativePath + " : メモリ不足（画像が大きすぎます）。設定でJPEG変換を有効にするか、件数を減らしてください。");
+                logError(unit.displayName() + " : メモリ不足（画像が大きすぎます）。設定でJPEG変換を有効にするか、件数を減らしてください。");
             } catch (Throwable t) {
-                logError(relativePath + " : 比較エラー", t);
+                logError(unit.displayName() + " : 比較エラー", t);
             }
         }
+        logSkippedGroups(start.relativeImagePaths(), start.newRelativeImagePaths(), units);
         if (results.isEmpty()) {
             log("比較対象がありません。");
         }
         return true;
+    }
+
+    private record CombinedSide(BufferedImage image, int reportWidth, int reportHeight, boolean anyCropped) {}
+
+    private CombinedSide buildCombinedSide(
+            File root,
+            List<String> imagePaths,
+            boolean trimMargins,
+            int cropThreshold,
+            int cropAmount) throws IOException {
+        List<ImageComparator.PrepareResult> prepared = new ArrayList<>();
+        for (String path : imagePaths) {
+            BufferedImage loaded = ImageComparator.loadFromFile(ImageScanUtil.resolve(root, path));
+            prepared.add(ImageComparator.prepare(loaded, trimMargins, cropThreshold, cropAmount));
+        }
+        int width = 0;
+        int height = 0;
+        boolean anyCropped = false;
+        for (ImageComparator.PrepareResult part : prepared) {
+            width = Math.max(width, part.width());
+            height += part.height();
+            anyCropped |= part.cropped();
+        }
+        if (prepared.size() > 1) {
+            height += ImageCombiner.GAP_PX * (prepared.size() - 1);
+        }
+
+        List<BufferedImage> images = prepared.stream().map(ImageComparator.PrepareResult::image).toList();
+        BufferedImage combined = prepared.size() == 1
+                ? images.get(0)
+                : ImageCombiner.combineVertically(images, ImageCombiner.GAP_PX);
+        if (prepared.size() > 1) {
+            for (ImageComparator.PrepareResult part : prepared) {
+                if (part.image() != combined) {
+                    ImageScaleUtil.dispose(part.image());
+                }
+            }
+        }
+        return new CombinedSide(combined, width, height, anyCropped);
+    }
+
+    private static String combineCountLabel(int oldCount, int newCount) {
+        if (oldCount == newCount) {
+            return " （" + oldCount + "枚結合）";
+        }
+        return " （旧" + oldCount + "枚+新" + newCount + "枚結合）";
+    }
+
+    private void logSkippedGroups(
+            List<String> oldPaths,
+            List<String> newPaths,
+            List<ImageTextGroupUtil.ComparisonUnit> units) {
+        Set<String> compared = new HashSet<>();
+        for (ImageTextGroupUtil.ComparisonUnit unit : units) {
+            compared.add(unit.textBaseName());
+        }
+        Set<String> checked = new HashSet<>();
+        for (String path : oldPaths) {
+            String textBase = ImageTextGroupUtil.resolveTextBase(path, oldPaths, newPaths);
+            if (checked.contains(textBase)) {
+                continue;
+            }
+            checked.add(textBase);
+            if (compared.contains(textBase)) {
+                continue;
+            }
+            List<String> newMembers = ImageTextGroupUtil.collectGroupPaths(
+                    newPaths,
+                    ImageTextGroupUtil.dirFromTextBase(textBase),
+                    ImageTextGroupUtil.baseNameFromTextBase(textBase));
+            if (newMembers.isEmpty()) {
+                log(textBase + " : 新フォルダに対応画像がありません。スキップ。");
+            }
+        }
     }
 
     private static void releaseResultImages(List<ImageComparator.Result> results) {

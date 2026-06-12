@@ -12,7 +12,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 画像と同じベース名の .txt を比較する（java-diff-utils 使用）。 */
+/** 画像に対応する .txt を比較する（java-diff-utils 使用）。 */
 public final class TextComparator {
 
     private static final DiffRowGenerator DIFF_ROW_GENERATOR = DiffRowGenerator.create()
@@ -40,9 +40,9 @@ public final class TextComparator {
 
     private TextComparator() {}
 
-    public static TextResult compare(File oldDir, File newDir, String imageFileName) throws IOException {
-        Path oldTxt = textPath(oldDir, imageFileName);
-        Path newTxt = textPath(newDir, imageFileName);
+    public static TextResult compare(File oldDir, File newDir, String textBaseName) throws IOException {
+        Path oldTxt = textPath(oldDir, textBaseName);
+        Path newTxt = textPath(newDir, textBaseName);
         if (!Files.isRegularFile(oldTxt) || !Files.isRegularFile(newTxt)) {
             return new TextResult(-1, false);
         }
@@ -50,10 +50,10 @@ public final class TextComparator {
         return new TextResult(countDiffDisplayRows(rows), true);
     }
 
-    public static TextDiffContent loadTextDiffContent(File oldDir, File newDir, String imageFileName)
+    public static TextDiffContent loadTextDiffContent(File oldDir, File newDir, String textBaseName)
             throws IOException {
-        Path oldTxt = textPath(oldDir, imageFileName);
-        Path newTxt = textPath(newDir, imageFileName);
+        Path oldTxt = textPath(oldDir, textBaseName);
+        Path newTxt = textPath(newDir, textBaseName);
         if (!Files.isRegularFile(oldTxt) || !Files.isRegularFile(newTxt)) {
             return TextDiffContent.unavailable();
         }
@@ -97,9 +97,7 @@ public final class TextComparator {
         return Files.readAllLines(path, StandardCharsets.UTF_8);
     }
 
-    static Path textPath(File dir, String imageFileName) {
-        int dot = imageFileName.lastIndexOf('.');
-        String base = dot > 0 ? imageFileName.substring(0, dot) : imageFileName;
-        return dir.toPath().resolve(base + ".txt");
+    static Path textPath(File dir, String textBaseName) {
+        return dir.toPath().resolve(textBaseName.replace('/', File.separatorChar) + ".txt");
     }
 }

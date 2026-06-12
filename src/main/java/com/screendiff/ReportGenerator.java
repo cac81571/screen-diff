@@ -646,11 +646,11 @@ public class ReportGenerator {
         int canvasH = overlay.getHeight();
 
         if (placement == HtmlImagePlacement.INLINE) {
-            String oldUrl = encodeSourceToDataUrl(
-                    ImageScanUtil.resolve(oldDir, r.fileName()),
+            String oldUrl = encodeReportImageToDataUrl(
+                    r.reportOldImage(), ImageScanUtil.resolve(oldDir, r.fileName()),
                     format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
-            String newUrl = encodeSourceToDataUrl(
-                    ImageScanUtil.resolve(newDir, r.fileName()),
+            String newUrl = encodeReportImageToDataUrl(
+                    r.reportNewImage(), ImageScanUtil.resolve(newDir, r.fileName()),
                     format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
             String diffUrl = encodeDiffOverlayToDataUrl(r);
             return new HtmlAssetUrls(oldUrl, newUrl, diffUrl);
@@ -661,15 +661,59 @@ public class ReportGenerator {
         String newFile = String.format("%03d_new.%s", idx, ext);
         String diffFile = String.format("%03d_diff.png", idx);
 
-        writeAssetFromSource(
-                ImageScanUtil.resolve(oldDir, r.fileName()), assetsDir.resolve(oldFile),
+        writeReportImageAsset(
+                r.reportOldImage(), ImageScanUtil.resolve(oldDir, r.fileName()), assetsDir.resolve(oldFile),
                 format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
-        writeAssetFromSource(
-                ImageScanUtil.resolve(newDir, r.fileName()), assetsDir.resolve(newFile),
+        writeReportImageAsset(
+                r.reportNewImage(), ImageScanUtil.resolve(newDir, r.fileName()), assetsDir.resolve(newFile),
                 format, jpegQuality, cropThreshold, cropAmount, trimMargins, canvasW, canvasH);
         writeAssetDiffOverlay(r, assetsDir.resolve(diffFile));
 
         return new HtmlAssetUrls(assetRelUrl(oldFile), assetRelUrl(newFile), assetRelUrl(diffFile));
+    }
+
+    private static String encodeReportImageToDataUrl(
+            BufferedImage reportImage,
+            File fallbackSource,
+            ImageFormat format,
+            float jpegQuality,
+            int cropThreshold,
+            int cropAmount,
+            boolean trimMargins,
+            int canvasW,
+            int canvasH) throws IOException {
+        BufferedImage img = reportImage != null
+                ? reportImage
+                : ImageComparator.loadForReportCanvas(
+                        fallbackSource, trimMargins, cropThreshold, cropAmount, canvasW, canvasH);
+        try {
+            return encodeImageToDataUrl(img, format, jpegQuality);
+        } finally {
+            if (reportImage == null) {
+                ImageScaleUtil.dispose(img);
+            }
+        }
+    }
+
+    private static void writeReportImageAsset(
+            BufferedImage reportImage,
+            File fallbackSource,
+            Path dest,
+            ImageFormat format,
+            float jpegQuality,
+            int cropThreshold,
+            int cropAmount,
+            boolean trimMargins,
+            int canvasW,
+            int canvasH) throws IOException {
+        BufferedImage img = reportImage != null
+                ? reportImage
+                : ImageComparator.loadForReportCanvas(
+                        fallbackSource, trimMargins, cropThreshold, cropAmount, canvasW, canvasH);
+        writeImageToFile(img, dest, format, jpegQuality);
+        if (reportImage == null) {
+            ImageScaleUtil.dispose(img);
+        }
     }
 
     private static String encodeSourceToDataUrl(
@@ -822,11 +866,12 @@ public class ReportGenerator {
     private static void appendTextDiffAccordion(
             StringBuilder sb, int idx, File oldDir, File newDir, ImageComparator.Result r) throws IOException {
         TextComparator.TextDiffContent content =
-                TextComparator.loadTextDiffContent(oldDir, newDir, r.fileName());
+                TextComparator.loadTextDiffContent(oldDir, newDir, r.textBaseName());
         sb.append("<details class='text-diff' id='text-diff-").append(idx).append("'>");
         if (content.available()) {
             int displayRows = TextComparator.countDiffDisplayRows(content.rows());
-            sb.append("<summary>テキスト差分（差分行数 ").append(displayRows).append("行）</summary>");
+            sb.append("<summary>テキスト差分（").append(escapeHtml(r.textBaseName()))
+              .append(".txt … 差分行数 ").append(displayRows).append("行）</summary>");
             sb.append("<div class='text-diff-body'>");
             if (content.rows().isEmpty()) {
                 sb.append("<p class='text-diff-empty'>(空)</p>");
@@ -835,10 +880,10 @@ public class ReportGenerator {
             }
             sb.append("</div>");
         } else {
-            sb.append("<summary>テキスト差分（—）</summary>");
+            sb.append("<summary>テキスト差分（").append(escapeHtml(r.textBaseName())).append(".txt … —）</summary>");
             sb.append("<div class='text-diff-body'><p class='text-diff-empty'>")
-              .append("旧・新フォルダに同名の .txt がありません（")
-              .append(escapeHtml(textBaseName(r.fileName())))
+              .append("旧・新フォルダに .txt がありません（")
+              .append(escapeHtml(r.textBaseName()))
               .append(".txt）</p></div>");
         }
         sb.append("</details>");
@@ -900,11 +945,6 @@ public class ReportGenerator {
             return "&#160;";
         }
         return html;
-    }
-
-    private static String textBaseName(String imageFileName) {
-        int dot = imageFileName.lastIndexOf('.');
-        return dot > 0 ? imageFileName.substring(0, dot) : imageFileName;
     }
 
     private static String escapeHtml(String text) {

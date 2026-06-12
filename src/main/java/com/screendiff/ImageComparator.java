@@ -12,6 +12,8 @@ import java.util.List;
 
 public class ImageComparator {
 
+    record PrepareResult(BufferedImage image, int width, int height, boolean cropped) {}
+
     public record Result(
             String fileName,
             int oldWidth,
@@ -24,6 +26,7 @@ public class ImageComparator {
             boolean oldCropped,
             boolean newCropped,
             int textDiffLines,
+            String textBaseName,
             BufferedImage diffOverlayImage,
             String aiJudgment,
             BufferedImage reportOldImage,
@@ -35,112 +38,99 @@ public class ImageComparator {
      * @param trimMargins 四隅の白余白を除去してから比較する
      */
     public static Result compare(
-            File oldFile,
-            File newFile,
+            BufferedImage oldImage,
+            BufferedImage newImage,
+            int reportOldW,
+            int reportOldH,
+            boolean oldCropped,
+            int reportNewW,
+            int reportNewH,
+            boolean newCropped,
             File oldRoot,
             File newRoot,
-            String relativePath,
+            String displayName,
+            String textBaseName,
             int blockSize,
-            int threshold,
-            boolean trimMargins,
-            int cropThreshold,
-            int cropAmount) throws IOException {
-        BufferedImage img1 = ImageIO.read(oldFile);
-        BufferedImage img2 = ImageIO.read(newFile);
-        if (img1 == null || img2 == null) {
-            ImageScaleUtil.dispose(img1);
-            ImageScaleUtil.dispose(img2);
-            throw new IOException("画像を読み込めません: " + oldFile.getName());
-        }
-
-        int origOldW = img1.getWidth(), origOldH = img1.getHeight();
-        int origNewW = img2.getWidth(), origNewH = img2.getHeight();
-
-        int oldW = origOldW;
-        int oldH = origOldH;
-        int newW = origNewW;
-        int newH = origNewH;
-
-        if (trimMargins) {
-            BufferedImage trimmed1 = ImageMarginTrimmer.trim(img1);
-            BufferedImage trimmed2 = ImageMarginTrimmer.trim(img2);
-            if (trimmed1 != img1) {
-                ImageScaleUtil.dispose(img1);
-            }
-            if (trimmed2 != img2) {
-                ImageScaleUtil.dispose(img2);
-            }
-            img1 = trimmed1;
-            img2 = trimmed2;
-            oldW = img1.getWidth();
-            oldH = img1.getHeight();
-            newW = img2.getWidth();
-            newH = img2.getHeight();
-        }
-
-        int reportOldW = oldW;
-        int reportOldH = oldH;
-        int reportNewW = newW;
-        int reportNewH = newH;
-
-        if (cropAmount > 0) {
-            BufferedImage cropped1 = ImageCropper.cropFromTop(img1, cropThreshold, cropAmount);
-            BufferedImage cropped2 = ImageCropper.cropFromTop(img2, cropThreshold, cropAmount);
-            if (cropped1 != img1) {
-                ImageScaleUtil.dispose(img1);
-            }
-            if (cropped2 != img2) {
-                ImageScaleUtil.dispose(img2);
-            }
-            img1 = cropped1;
-            img2 = cropped2;
-        }
-
-        img1 = ImageScaleUtil.limitForComparison(img1);
-        img2 = ImageScaleUtil.limitForComparison(img2);
+            int threshold) throws IOException {
+        BufferedImage img1 = ImageScaleUtil.limitForComparison(oldImage);
+        BufferedImage img2 = ImageScaleUtil.limitForComparison(newImage);
 
         int w = Math.max(img1.getWidth(), img2.getWidth());
         int h = Math.max(img1.getHeight(), img2.getHeight());
-        img1 = padToCanvas(img1, w, h);
-        img2 = padToCanvas(img2, w, h);
+        BufferedImage reportOld = padToCanvas(img1, w, h);
+        BufferedImage reportNew = padToCanvas(img2, w, h);
 
-        ImageComparison comparison = new ImageComparison(img1, img2);
+        ImageComparison comparison = new ImageComparison(reportOld, reportNew);
         comparison.setMinimalRectangleSize(blockSize);
         comparison.setPixelToleranceLevel(threshold / 255.0);
 
         List<Rectangle> rectangles = comparison.createMask();
         BufferedImage diffOverlay = createDiffOverlay(rectangles, w, h);
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
-        int widthDiff = widthDiff(reportOldW, reportNewW);
-        int heightDiff = heightDiff(reportOldH, reportNewH);
-        boolean oldCropped = ImageCropper.isCropped(reportOldH, cropThreshold, cropAmount);
-        boolean newCropped = ImageCropper.isCropped(reportNewH, cropThreshold, cropAmount);
-        TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, relativePath);
-
-        ImageScaleUtil.dispose(img1);
-        ImageScaleUtil.dispose(img2);
+        TextComparator.TextResult textResult = TextComparator.compare(oldRoot, newRoot, textBaseName);
 
         return new Result(
-                relativePath,
+                displayName,
                 reportOldW,
                 reportOldH,
                 reportNewW,
                 reportNewH,
                 diffPercent,
-                widthDiff,
-                heightDiff,
+                widthDiff(reportOldW, reportNewW),
+                heightDiff(reportOldH, reportNewH),
                 oldCropped,
                 newCropped,
                 textResult.diffLineCount(),
+                textBaseName,
                 diffOverlay,
                 "未判定",
-                null,
-                null);
+                reportOld,
+                reportNew);
+    }
+
+    static PrepareResult prepare(
+            BufferedImage source,
+            boolean trimMargins,
+            int cropThreshold,
+            int cropAmount) {
+        BufferedImage img = source;
+        if (trimMargins) {
+            BufferedImage trimmed = ImageMarginTrimmer.trim(img);
+            if (trimmed != img) {
+                ImageScaleUtil.dispose(img);
+            }
+            img = trimmed;
+        }
+
+        int width = img.getWidth();
+        int height = img.getHeight();
+        boolean cropped = false;
+
+        if (cropAmount > 0) {
+            BufferedImage croppedImg = ImageCropper.cropFromTop(img, cropThreshold, cropAmount);
+            if (croppedImg != img) {
+                ImageScaleUtil.dispose(img);
+            }
+            img = croppedImg;
+            cropped = ImageCropper.isCropped(height, cropThreshold, cropAmount);
+        }
+
+        return new PrepareResult(img, img.getWidth(), img.getHeight(), cropped);
+    }
+
+    static BufferedImage loadFromFile(File file) throws IOException {
+        BufferedImage img = ImageIO.read(file);
+        if (img == null) {
+            throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
+        }
+        return img;
     }
 
     /** レポート用画像を解放（HTML 出力後に呼ぶ） */
     public static Result releaseImages(Result result) {
         ImageScaleUtil.dispose(result.diffOverlayImage());
+        ImageScaleUtil.dispose(result.reportOldImage());
+        ImageScaleUtil.dispose(result.reportNewImage());
         return new Result(
                 result.fileName(),
                 result.oldWidth(),
@@ -153,6 +143,7 @@ public class ImageComparator {
                 result.oldCropped(),
                 result.newCropped(),
                 result.textDiffLines(),
+                result.textBaseName(),
                 null,
                 result.aiJudgment(),
                 null,
@@ -205,9 +196,6 @@ public class ImageComparator {
         return Math.abs(oldH - newH);
     }
 
-    /**
-     * レポート用に比較時と同じキャンバスへ配置する（旧・新・差分オーバーレイのピクセル位置を一致させる）。
-     */
     static BufferedImage loadForReportCanvas(
             File file,
             boolean trimMargins,
@@ -219,22 +207,9 @@ public class ImageComparator {
         if (img == null) {
             throw new IOException("画像を読み込めません: " + file.getAbsolutePath());
         }
-        if (trimMargins) {
-            BufferedImage trimmed = ImageMarginTrimmer.trim(img);
-            if (trimmed != img) {
-                ImageScaleUtil.dispose(img);
-            }
-            img = trimmed;
-        }
-        if (cropAmount > 0) {
-            BufferedImage cropped = ImageCropper.cropFromTop(img, cropThreshold, cropAmount);
-            if (cropped != img) {
-                ImageScaleUtil.dispose(img);
-            }
-            img = cropped;
-        }
-        img = ImageScaleUtil.limitForComparison(img);
-        return padToCanvas(img, canvasW, canvasH);
+        PrepareResult prepared = prepare(img, trimMargins, cropThreshold, cropAmount);
+        BufferedImage limited = ImageScaleUtil.limitForComparison(prepared.image());
+        return padToCanvas(limited, canvasW, canvasH);
     }
 
     static BufferedImage padToCanvas(BufferedImage img, int canvasW, int canvasH) {
