@@ -109,9 +109,6 @@ public class App extends JFrame {
 
         c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1;
         includeSubfoldersCheck.setToolTipText("ON のとき、旧・新フォルダ以下のサブフォルダ内の画像も比較します（相対パスが一致するものをペアにします）");
-        inputPanel.add(includeSubfoldersCheck, c);
-        c.gridwidth = 1;
-
         htmlReportButton = new JButton("HTMLレポート作成");
         htmlReportButton.addActionListener(e -> createHtmlReport());
         cancelReportButton = new JButton("中断");
@@ -121,12 +118,13 @@ public class App extends JFrame {
         copyImageAiPromptBtn.setToolTipText(
                 "AIプロンプト タブのプロンプトをコピー（" + VAR_OLD_DIR + " / " + VAR_NEW_DIR + " を比較タブのフォルダパスに置換）");
         copyImageAiPromptBtn.addActionListener(e -> copyImageAiPromptToClipboard());
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        btnPanel.add(htmlReportButton);
-        btnPanel.add(cancelReportButton);
-        btnPanel.add(copyImageAiPromptBtn);
-        c.gridx = 1; c.gridy = 4;
-        inputPanel.add(btnPanel, c);
+        JPanel subfolderRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        subfolderRow.add(includeSubfoldersCheck);
+        subfolderRow.add(htmlReportButton);
+        subfolderRow.add(cancelReportButton);
+        subfolderRow.add(copyImageAiPromptBtn);
+        inputPanel.add(subfolderRow, c);
+        c.gridwidth = 1;
 
         panel.add(inputPanel, BorderLayout.NORTH);
 

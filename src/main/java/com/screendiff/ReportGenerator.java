@@ -141,7 +141,7 @@ public class ReportGenerator {
                 scroll-margin-top:0
                 }
                 .img-wrap{cursor:default;overflow:visible;border-color:#ccc}
-                .img-wrap.zoomed .img-zoom-inner{transform:none!important}
+                .img-wrap .img-zoom-inner{transform:none!important}
                 .img-zoom-inner .overlay,.img-zoom-inner .blink-img{display:none!important}
                 }
                 </style>
@@ -349,6 +349,35 @@ public class ReportGenerator {
                   e.preventDefault();
                   adjustSliderByKeyboard(el,e.key==='ArrowRight'?1:-1,null);
                 });
+                var globalImageZoom=1;
+                function setImageZoomAll(){
+                  var val=parseFloat(document.getElementById('image_zoom_all').value);
+                  document.getElementById('image_zoom_val_all').textContent=Math.round(val)+'%';
+                  globalImageZoom=val/100;
+                  document.querySelectorAll('.img-wrap').forEach(applySliderZoomToWrap);
+                }
+                function applySliderZoomToWrap(wrap){
+                  if(wrap.dataset.focalZoom==='1'){return;}
+                  if(globalImageZoom===1){
+                    clearWrapZoomState(wrap);
+                    return;
+                  }
+                  wrap.dataset.ratioX='0.5';
+                  wrap.dataset.ratioY='0.5';
+                  wrap.dataset.panX='0';
+                  wrap.dataset.panY='0';
+                  wrap.dataset.scale=String(globalImageZoom);
+                  wrap.classList.add('zoomed');
+                  updateWrapTransform(wrap);
+                }
+                function resetImageZoomAll(){
+                  globalImageZoom=1;
+                  var slider=document.getElementById('image_zoom_all');
+                  if(slider){slider.value='100';}
+                  var label=document.getElementById('image_zoom_val_all');
+                  if(label){label.textContent='100%';}
+                  document.querySelectorAll('.img-wrap').forEach(clearWrapZoomState);
+                }
                 function isDualView(){
                   var checked=document.querySelector('input[name="view_mode"]:checked');
                   return checked&&checked.value==='dual';
@@ -408,6 +437,7 @@ public class ReportGenerator {
                 function applyInlineZoomToWrap(wrap,ratioX,ratioY,resetPan){
                   var inner=wrap.querySelector('.img-zoom-inner');
                   if(!inner){return;}
+                  wrap.dataset.focalZoom='1';
                   wrap.dataset.ratioX=String(ratioX);
                   wrap.dataset.ratioY=String(ratioY);
                   if(resetPan!==false){
@@ -425,6 +455,7 @@ public class ReportGenerator {
                   inner.style.transform='';
                   inner.style.transformOrigin='';
                   wrap.dataset.scale='1';
+                  delete wrap.dataset.focalZoom;
                   delete wrap.dataset.ratioX;
                   delete wrap.dataset.ratioY;
                   delete wrap.dataset.panX;
@@ -472,15 +503,32 @@ public class ReportGenerator {
                     zoomDragState.wraps.forEach(function(w){w.classList.remove('dragging');});
                     zoomDragState=null;
                   });
+                  window.addEventListener('resize',function(){
+                    document.querySelectorAll('.img-wrap.zoomed').forEach(updateWrapTransform);
+                  });
                 }
                 function resetInlineZoom(wrap){
-                  getSyncedWraps(wrap).forEach(clearWrapZoomState);
+                  getSyncedWraps(wrap).forEach(function(w){
+                    delete w.dataset.focalZoom;
+                    if(globalImageZoom!==1){
+                      applySliderZoomToWrap(w);
+                    }else{
+                      clearWrapZoomState(w);
+                    }
+                  });
                 }
                 function resetAllInlineZoom(){
-                  document.querySelectorAll('.img-wrap').forEach(clearWrapZoomState);
+                  document.querySelectorAll('.img-wrap').forEach(function(w){
+                    delete w.dataset.focalZoom;
+                    if(globalImageZoom!==1){
+                      applySliderZoomToWrap(w);
+                    }else{
+                      clearWrapZoomState(w);
+                    }
+                  });
                 }
                 function zoomInlineAtClick(wrap,e){
-                  if(wrap.classList.contains('zoomed')){
+                  if(wrap.dataset.focalZoom==='1'){
                     resetInlineZoom(wrap);
                     return;
                   }
@@ -500,7 +548,7 @@ public class ReportGenerator {
                   });
                 }
                 document.addEventListener('keydown',function(e){
-                  if(e.key==='Escape'){resetAllInlineZoom();}
+                  if(e.key==='Escape'){resetImageZoomAll();}
                 });
                 </script>
                 </head><body>
@@ -513,6 +561,7 @@ public class ReportGenerator {
                 <label><input type='radio' name='view_mode' value='single-old' onchange="setViewMode(this.value)"> 旧のみ</label>
                 <label><input type='radio' name='view_mode' value='single-new' onchange="setViewMode(this.value)"> 新のみ</label>
                 </div>
+                <label>拡大率:<input id='image_zoom_all' type='range' min='25' max='200' value='100' step='5' oninput="setImageZoomAll()"><span id='image_zoom_val_all'>100%</span></label>
                 <label><input type='checkbox' onchange="toggleDiffOverlayAll(this.checked)"> 差分表示</label>
                 <label><input type='checkbox' onchange="toggleImgOverlayAll(this.checked)"> 新旧表示</label>
                 <label>透明度:<input id='opacity_all' type='range' min='0' max='100' value='50' oninput="setOpacityAll()"><span id='opacity_val_all'>50%</span></label>
