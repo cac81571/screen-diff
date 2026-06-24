@@ -1,5 +1,6 @@
 package com.screendiff;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -7,6 +8,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,6 +25,16 @@ public final class TextTransformUtil {
             return new TextTransformOptions(false, List.of());
         }
     }
+
+    public enum TransformOutcome {
+        TRANSFORMED,
+        SKIPPED_HAS_BACKUP,
+        DISABLED
+    }
+
+    public record BatchTransformResult(int transformed, int skipped, int errors) {}
+
+    public record BatchRestoreResult(int restored, int skipped, int errors) {}
 
     private TextTransformUtil() {}
 
@@ -148,22 +160,151 @@ public final class TextTransformUtil {
         return Path.of(source.toString() + ".bak");
     }
 
+    static List<Path> listTextFiles(File root, boolean includeSubfolders) throws IOException {
+        Path rootPath = root.toPath().toAbsolutePath().normalize();
+        List<Path> paths = new ArrayList<>();
+        if (includeSubfolders) {
+            try (Stream<Path> stream = Files.walk(rootPath)) {
+                stream.filter(Files::isRegularFile)
+                        .filter(TextTransformUtil::isTransformTargetTextFile)
+                        .forEach(paths::add);
+            }
+        } else {
+            File[] files = root.listFiles((d, name) -> isTransformTargetTextFileName(name));
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isFile()) {
+                        paths.add(file.toPath());
+                    }
+                }
+            }
+        }
+        paths.sort(Path::compareTo);
+        return paths;
+    }
+
+    static List<Path> listTextBackupFiles(File root, boolean includeSubfolders) throws IOException {
+        Path rootPath = root.toPath().toAbsolutePath().normalize();
+        List<Path> paths = new ArrayList<>();
+        if (includeSubfolders) {
+            try (Stream<Path> stream = Files.walk(rootPath)) {
+                stream.filter(Files::isRegularFile)
+                        .filter(TextTransformUtil::isTextBackupFile)
+                        .forEach(paths::add);
+            }
+        } else {
+            File[] files = root.listFiles((d, name) -> isTextBackupFileName(name));
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isFile()) {
+                        paths.add(file.toPath());
+                    }
+                }
+            }
+        }
+        paths.sort(Path::compareTo);
+        return paths;
+    }
+
+    private static boolean isTransformTargetTextFile(Path path) {
+        return isTransformTargetTextFileName(path.getFileName().toString());
+    }
+
+    private static boolean isTransformTargetTextFileName(String name) {
+        String lower = name.toLowerCase();
+        return lower.endsWith(".txt") && !lower.endsWith(".txt.bak");
+    }
+
+    private static boolean isTextBackupFile(Path path) {
+        return isTextBackupFileName(path.getFileName().toString());
+    }
+
+    private static boolean isTextBackupFileName(String name) {
+        return name.toLowerCase().endsWith(".txt.bak");
+    }
+
+    static Path textPathFromBackup(Path backup) {
+        String path = backup.toString();
+        if (!path.toLowerCase().endsWith(".bak")) {
+            throw new IllegalArgumentException("バックアップファイルではありません: " + backup);
+        }
+        return Path.of(path.substring(0, path.length() - 4));
+    }
+
+    public static TransformOutcome transformTextFile(Path path, TextTransformOptions transform) throws IOException {
+        if (!transform.enabled()) {
+            return TransformOutcome.DISABLED;
+        }
+        Path backup = backupPath(path);
+        if (Files.isRegularFile(backup)) {
+            return TransformOutcome.SKIPPED_HAS_BACKUP;
+        }
+        String raw = Files.readString(path, StandardCharsets.UTF_8);
+        Files.copy(path, backup, StandardCopyOption.REPLACE_EXISTING);
+        Files.writeString(path, apply(raw, transform), StandardCharsets.UTF_8);
+        return TransformOutcome.TRANSFORMED;
+    }
+
+    public static boolean restoreTextFileFromBackup(Path backupPath) throws IOException {
+        if (!Files.isRegularFile(backupPath)) {
+            return false;
+        }
+        Path textPath = textPathFromBackup(backupPath);
+        Files.copy(backupPath, textPath, StandardCopyOption.REPLACE_EXISTING);
+        Files.delete(backupPath);
+        return true;
+    }
+
+    public static BatchTransformResult transformDirectory(
+            File root, boolean includeSubfolders, TextTransformOptions transform) throws IOException {
+        if (!transform.enabled()) {
+            return new BatchTransformResult(0, 0, 0);
+        }
+        int transformed = 0;
+        int skipped = 0;
+        int errors = 0;
+        for (Path path : listTextFiles(root, includeSubfolders)) {
+            try {
+                TransformOutcome outcome = transformTextFile(path, transform);
+                switch (outcome) {
+                    case TRANSFORMED -> transformed++;
+                    case SKIPPED_HAS_BACKUP -> skipped++;
+                    default -> skipped++;
+                }
+            } catch (IOException e) {
+                errors++;
+            }
+        }
+        return new BatchTransformResult(transformed, skipped, errors);
+    }
+
+    public static BatchRestoreResult restoreDirectory(File root, boolean includeSubfolders) throws IOException {
+        int restored = 0;
+        int skipped = 0;
+        int errors = 0;
+        for (Path backup : listTextBackupFiles(root, includeSubfolders)) {
+            try {
+                if (restoreTextFileFromBackup(backup)) {
+                    restored++;
+                } else {
+                    skipped++;
+                }
+            } catch (IOException e) {
+                errors++;
+            }
+        }
+        return new BatchRestoreResult(restored, skipped, errors);
+    }
+
     /**
      * 変換 ON かつ .bak 未作成 … 元内容を .bak へ保存し、変換結果を .txt へ書き込む。
      * 変換 ON かつ .bak あり … 変換済みとみなし .txt をそのまま読む。
      */
     public static String loadTextForComparison(Path path, TextTransformOptions transform) throws IOException {
-        String raw = Files.readString(path, StandardCharsets.UTF_8);
         if (!transform.enabled()) {
-            return raw;
+            return Files.readString(path, StandardCharsets.UTF_8);
         }
-        Path backup = backupPath(path);
-        if (Files.isRegularFile(backup)) {
-            return raw;
-        }
-        Files.copy(path, backup, StandardCopyOption.REPLACE_EXISTING);
-        String transformed = apply(raw, transform);
-        Files.writeString(path, transformed, StandardCharsets.UTF_8);
-        return transformed;
+        transformTextFile(path, transform);
+        return Files.readString(path, StandardCharsets.UTF_8);
     }
 }

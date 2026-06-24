@@ -64,6 +64,8 @@ public class App extends JFrame {
     private final JTextArea aiImagePromptArea = new JTextArea(20, 60);
     private JButton htmlReportButton;
     private JButton cancelReportButton;
+    private JButton textTransformRunButton;
+    private JButton textTransformRestoreButton;
     private SwingWorker<ReportOutcome, Void> activeReportWorker;
     private volatile boolean reportInProgress;
     /** 処理開始ごとに増やし、前回ジョブの invokeLater ログを無視する */
@@ -168,9 +170,13 @@ public class App extends JFrame {
     private JPanel createAiImageTab() {
         JPanel panel = createAiPromptTab(aiImagePromptArea, "画像比較用AIプロンプト:");
         JLabel hint = new JLabel(
-                "<html>初期テンプレートは <code>" + VAR_OLD_DIR + "</code> / <code>" + VAR_NEW_DIR + "</code> / "
-                        + "<code>" + VAR_INCLUDE_SUBFOLDERS + "</code> を使用します。"
-                        + "比較タブからコピー時に比較タブの設定へ置換します。</html>");
+                "<html>以下の置換パラメータを利用できます。<br>"
+                        + "<code>" + VAR_OLD_DIR + "</code> … 旧フォルダのパス（比較タブで指定したフルパス）<br>"
+                        + "<code>" + VAR_NEW_DIR + "</code> … 新フォルダのパス（比較タブで指定したフルパス）<br>"
+                        + "<code>" + VAR_INCLUDE_SUBFOLDERS + "</code> … サブフォルダも比較する（ON / OFF）<br>"
+                        + "<br>"
+                        + "比較タブの「画像比較用AIプロンプト」ボタンでコピーすると、"
+                        + "上記パラメータが設定値に置換されます。</html>");
         hint.setBorder(BorderFactory.createEmptyBorder(8, 10, 0, 10));
         panel.add(hint, BorderLayout.SOUTH);
         return panel;
@@ -358,18 +364,38 @@ public class App extends JFrame {
         c.insets = new Insets(8, 5, 8, 5);
         c.anchor = GridBagConstraints.WEST;
 
-        c.gridx = 0; c.gridy = 0; c.gridwidth = 3; c.weightx = 1;
+        textTransformRunButton = new JButton("変換");
+        textTransformRunButton.setToolTipText("比較タブの旧・新フォルダ内の .txt を変換します（変換 ON の側のみ）");
+        textTransformRunButton.addActionListener(e -> runTextTransformOnly());
+        textTransformRestoreButton = new JButton("変換前に戻す");
+        textTransformRestoreButton.setToolTipText(
+                "比較タブの旧・新フォルダ内の .txt.bak から .txt を復元します（変換 ON の側のみ）");
+        textTransformRestoreButton.addActionListener(e -> runTextTransformRestore());
+        JPanel runBtnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        runBtnPanel.add(textTransformRunButton);
+        JPanel restoreBtnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        restoreBtnPanel.add(textTransformRestoreButton);
+
+        c.gridx = 0; c.gridy = 0; c.gridwidth = 3; c.weightx = 1; c.weighty = 0;
+        c.anchor = GridBagConstraints.WEST;
         c.fill = GridBagConstraints.HORIZONTAL;
         panel.add(new JLabel(
                 "比較前に .txt へ正規表現置換を適用します。初回は元内容を .bak に保存してから .txt を変換します。"
                         + ".bak がある場合は変換済みとみなしてスキップします。旧・新フォルダで別々に設定できます。"), c);
 
-        initTextTransformRow(panel, c, 1, "旧:", oldTextTransformCheck, oldTextTransformArea);
-        initTextTransformRow(panel, c, 2, "新:", newTextTransformCheck, newTextTransformArea);
+        c.gridy = 1;
+        panel.add(runBtnPanel, c);
 
-        c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1; c.weighty = 0.01;
+        initTextTransformRow(panel, c, 2, oldTextTransformCheck, oldTextTransformArea);
+        initTextTransformRow(panel, c, 3, newTextTransformCheck, newTextTransformArea);
+
+        c.gridy = 4; c.weighty = 1;
         c.fill = GridBagConstraints.BOTH;
         panel.add(Box.createVerticalGlue(), c);
+
+        c.gridy = 5; c.weighty = 0;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(restoreBtnPanel, c);
 
         return panel;
     }
@@ -393,13 +419,8 @@ public class App extends JFrame {
             JPanel panel,
             GridBagConstraints c,
             int row,
-            String label,
             JCheckBox check,
             JTextArea area) {
-        c.gridx = 0; c.gridy = row; c.gridwidth = 1; c.weightx = 0; c.weighty = 0;
-        c.fill = GridBagConstraints.HORIZONTAL;
-        panel.add(new JLabel(label), c);
-
         check.setToolTipText("ON のとき、比較前に .txt を正規表現で置換します");
         area.setToolTipText("""
                 1行1ルール（タブ区切り）: /正規表現/フラグ<TAB>置換後
@@ -409,10 +430,9 @@ public class App extends JFrame {
         rowPanel.add(check, BorderLayout.WEST);
         rowPanel.add(new JScrollPane(area), BorderLayout.CENTER);
 
-        c.gridx = 1; c.gridwidth = 2; c.weightx = 1; c.weighty = 0.45;
+        c.gridx = 0; c.gridy = row; c.gridwidth = 3; c.weightx = 1; c.weighty = 0.45;
         c.fill = GridBagConstraints.BOTH;
         panel.add(rowPanel, c);
-        c.gridwidth = 1;
     }
 
     private void updateTextTransformEnabled() {
@@ -460,6 +480,190 @@ public class App extends JFrame {
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("新テキスト変換: " + e.getMessage(), e);
         }
+    }
+
+    private record TextTransformDirs(File oldDir, File newDir, boolean includeSubfolders) {}
+
+    private TextTransformDirs resolveTextTransformDirs() {
+        String oldPath = getComboText(oldDirCombo);
+        String newPath = getComboText(newDirCombo);
+        if (oldPath.isEmpty() && newPath.isEmpty()) {
+            showError("比較タブで旧フォルダまたは新フォルダを指定してください。");
+            return null;
+        }
+        File oldDir = oldPath.isEmpty() ? null : new File(oldPath);
+        File newDir = newPath.isEmpty() ? null : new File(newPath);
+        if (oldDir != null && !oldDir.isDirectory()) {
+            showError("旧フォルダが存在しません: " + oldPath);
+            return null;
+        }
+        if (newDir != null && !newDir.isDirectory()) {
+            showError("新フォルダが存在しません: " + newPath);
+            return null;
+        }
+        return new TextTransformDirs(oldDir, newDir, includeSubfoldersCheck.isSelected());
+    }
+
+    private void setTextTransformButtonsEnabled(boolean enabled) {
+        if (textTransformRunButton != null) {
+            textTransformRunButton.setEnabled(enabled);
+        }
+        if (textTransformRestoreButton != null) {
+            textTransformRestoreButton.setEnabled(enabled);
+        }
+    }
+
+    private void runTextTransformOnly() {
+        if (reportInProgress) {
+            showError("処理が実行中です。完了までお待ちください。");
+            return;
+        }
+        saveTextTransformRules();
+        TextTransformUtil.TextTransformOptions oldTransform;
+        TextTransformUtil.TextTransformOptions newTransform;
+        try {
+            oldTransform = buildOldTextTransform();
+            newTransform = buildNewTextTransform();
+        } catch (IllegalArgumentException e) {
+            showError(e.getMessage());
+            return;
+        }
+        if (!oldTransform.enabled() && !newTransform.enabled()) {
+            showError("旧または新のテキストファイル変換を有効にしてください。");
+            return;
+        }
+        TextTransformDirs dirs = resolveTextTransformDirs();
+        if (dirs == null) {
+            return;
+        }
+        if (oldTransform.enabled() && dirs.oldDir() == null) {
+            showError("旧テキスト変換が ON です。比較タブで旧フォルダを指定してください。");
+            return;
+        }
+        if (newTransform.enabled() && dirs.newDir() == null) {
+            showError("新テキスト変換が ON です。比較タブで新フォルダを指定してください。");
+            return;
+        }
+
+        setTextTransformButtonsEnabled(false);
+        SwingWorker<String, Void> worker = new SwingWorker<>() {
+            @Override
+            protected String doInBackground() throws Exception {
+                int transformed = 0;
+                int skipped = 0;
+                int errors = 0;
+                if (oldTransform.enabled()) {
+                    var result = TextTransformUtil.transformDirectory(
+                            dirs.oldDir(), dirs.includeSubfolders(), oldTransform);
+                    transformed += result.transformed();
+                    skipped += result.skipped();
+                    errors += result.errors();
+                    log("旧フォルダ テキスト変換: 変換 " + result.transformed()
+                            + " 件, スキップ " + result.skipped() + " 件"
+                            + (result.errors() > 0 ? ", エラー " + result.errors() + " 件" : ""));
+                }
+                if (newTransform.enabled()) {
+                    var result = TextTransformUtil.transformDirectory(
+                            dirs.newDir(), dirs.includeSubfolders(), newTransform);
+                    transformed += result.transformed();
+                    skipped += result.skipped();
+                    errors += result.errors();
+                    log("新フォルダ テキスト変換: 変換 " + result.transformed()
+                            + " 件, スキップ " + result.skipped() + " 件"
+                            + (result.errors() > 0 ? ", エラー " + result.errors() + " 件" : ""));
+                }
+                if (errors > 0) {
+                    return "テキスト変換完了（エラー " + errors + " 件。ログを確認してください）";
+                }
+                return "テキスト変換完了（変換 " + transformed + " 件, スキップ " + skipped + " 件）";
+            }
+
+            @Override
+            protected void done() {
+                setTextTransformButtonsEnabled(true);
+                try {
+                    String message = get();
+                    log(message);
+                    JOptionPane.showMessageDialog(App.this, message, "完了", JOptionPane.INFORMATION_MESSAGE);
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    logError("テキスト変換エラー", cause);
+                    showError("テキスト変換に失敗しました: " + cause.getMessage());
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void runTextTransformRestore() {
+        if (reportInProgress) {
+            showError("処理が実行中です。完了までお待ちください。");
+            return;
+        }
+        if (!oldTextTransformCheck.isSelected() && !newTextTransformCheck.isSelected()) {
+            showError("旧または新のテキストファイル変換を有効にしてください。");
+            return;
+        }
+        TextTransformDirs dirs = resolveTextTransformDirs();
+        if (dirs == null) {
+            return;
+        }
+        if (oldTextTransformCheck.isSelected() && dirs.oldDir() == null) {
+            showError("旧テキスト変換が ON です。比較タブで旧フォルダを指定してください。");
+            return;
+        }
+        if (newTextTransformCheck.isSelected() && dirs.newDir() == null) {
+            showError("新テキスト変換が ON です。比較タブで新フォルダを指定してください。");
+            return;
+        }
+
+        setTextTransformButtonsEnabled(false);
+        SwingWorker<String, Void> worker = new SwingWorker<>() {
+            @Override
+            protected String doInBackground() throws Exception {
+                int restored = 0;
+                int skipped = 0;
+                int errors = 0;
+                if (oldTextTransformCheck.isSelected()) {
+                    var result = TextTransformUtil.restoreDirectory(dirs.oldDir(), dirs.includeSubfolders());
+                    restored += result.restored();
+                    skipped += result.skipped();
+                    errors += result.errors();
+                    log("旧フォルダ 復元: 復元 " + result.restored() + " 件"
+                            + (result.errors() > 0 ? ", エラー " + result.errors() + " 件" : ""));
+                }
+                if (newTextTransformCheck.isSelected()) {
+                    var result = TextTransformUtil.restoreDirectory(dirs.newDir(), dirs.includeSubfolders());
+                    restored += result.restored();
+                    skipped += result.skipped();
+                    errors += result.errors();
+                    log("新フォルダ 復元: 復元 " + result.restored() + " 件"
+                            + (result.errors() > 0 ? ", エラー " + result.errors() + " 件" : ""));
+                }
+                if (errors > 0) {
+                    return "復元完了（エラー " + errors + " 件。ログを確認してください）";
+                }
+                if (restored == 0) {
+                    return "復元対象の .bak ファイルがありませんでした";
+                }
+                return "復元完了（" + restored + " 件）";
+            }
+
+            @Override
+            protected void done() {
+                setTextTransformButtonsEnabled(true);
+                try {
+                    String message = get();
+                    log(message);
+                    JOptionPane.showMessageDialog(App.this, message, "完了", JOptionPane.INFORMATION_MESSAGE);
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    logError("テキスト復元エラー", cause);
+                    showError("復元に失敗しました: " + cause.getMessage());
+                }
+            }
+        };
+        worker.execute();
     }
 
     private void linkSettingControls() {
@@ -895,6 +1099,7 @@ public class App extends JFrame {
         if (cancelReportButton != null) {
             cancelReportButton.setEnabled(!enabled);
         }
+        setTextTransformButtonsEnabled(enabled);
     }
 
     private void writeCsvReport(ComparisonContext ctx) throws IOException {
