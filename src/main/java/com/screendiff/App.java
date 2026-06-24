@@ -17,6 +17,14 @@ public class App extends JFrame {
     private static final Path HISTORY_FILE = Path.of(System.getProperty("user.home"), ".screendiff_history");
     private static final Path AI_IMAGE_PROMPT_FILE =
             Path.of(System.getProperty("user.home"), ".screendiff_ai_image_prompt");
+    private static final Path OLD_TEXT_TRANSFORM_FILE =
+            Path.of(System.getProperty("user.home"), ".screendiff_text_transform_old");
+    private static final Path NEW_TEXT_TRANSFORM_FILE =
+            Path.of(System.getProperty("user.home"), ".screendiff_text_transform_new");
+    private static final String DEFAULT_TEXT_TRANSFORM_RULES = """
+            /\\n\\t\\n/g\t\\t
+            /\\t\\n+/g\t\\t
+            """;
     /** AIプロンプト … 比較タブからコピー時に置換 */
     static final String VAR_OLD_DIR = "${OLD_DIR}";
     static final String VAR_NEW_DIR = "${NEW_DIR}";
@@ -46,6 +54,10 @@ public class App extends JFrame {
     private final JCheckBox includeSubfoldersCheck = new JCheckBox("サブフォルダも比較する", false);
     private final JCheckBox trimMarginsCheck = new JCheckBox("四隅の余白削除", false);
     private final JCheckBox cropImageCheck = new JCheckBox("画像を先頭から切り取る", true);
+    private final JCheckBox oldTextTransformCheck = new JCheckBox("旧テキストファイル変換する", false);
+    private final JCheckBox newTextTransformCheck = new JCheckBox("新テキストファイル変換する", false);
+    private final JTextArea oldTextTransformArea = new JTextArea(10, 60);
+    private final JTextArea newTextTransformArea = new JTextArea(10, 60);
     private final JLabel cropThresholdLabel = new JLabel("切取条件(px):");
     private final JLabel cropAmountLabel = new JLabel("実際の切取量(px):");
     private final JTextArea logArea = new JTextArea(10, 50);
@@ -63,12 +75,14 @@ public class App extends JFrame {
         setLayout(new BorderLayout(10, 10));
 
         loadHistory();
+        initTextTransformAreas();
         linkSettingControls();
         initAiPromptAreas();
 
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("比較", createCompareTab());
         tabs.addTab("設定", createSettingsTab());
+        tabs.addTab("テキスト変換", createTextTransformTab());
         tabs.addTab("AIプロンプト", createAiImageTab());
 
         add(tabs, BorderLayout.CENTER);
@@ -336,6 +350,118 @@ public class App extends JFrame {
         return panel;
     }
 
+    private JPanel createTextTransformTab() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
+
+        GridBagConstraints c = new GridBagConstraints();
+        c.insets = new Insets(8, 5, 8, 5);
+        c.anchor = GridBagConstraints.WEST;
+
+        c.gridx = 0; c.gridy = 0; c.gridwidth = 3; c.weightx = 1;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(new JLabel(
+                "比較前に .txt へ正規表現置換を適用します。初回は元内容を .bak に保存してから .txt を変換します。"
+                        + ".bak がある場合は変換済みとみなしてスキップします。旧・新フォルダで別々に設定できます。"), c);
+
+        initTextTransformRow(panel, c, 1, "旧:", oldTextTransformCheck, oldTextTransformArea);
+        initTextTransformRow(panel, c, 2, "新:", newTextTransformCheck, newTextTransformArea);
+
+        c.gridx = 0; c.gridy = 3; c.gridwidth = 3; c.weightx = 1; c.weighty = 0.01;
+        c.fill = GridBagConstraints.BOTH;
+        panel.add(Box.createVerticalGlue(), c);
+
+        return panel;
+    }
+
+    private void initTextTransformAreas() {
+        configureTransformArea(oldTextTransformArea, loadTextTransformRules(OLD_TEXT_TRANSFORM_FILE));
+        configureTransformArea(newTextTransformArea, loadTextTransformRules(NEW_TEXT_TRANSFORM_FILE));
+        oldTextTransformCheck.addItemListener(e -> updateTextTransformEnabled());
+        newTextTransformCheck.addItemListener(e -> updateTextTransformEnabled());
+        updateTextTransformEnabled();
+    }
+
+    private static void configureTransformArea(JTextArea area, String text) {
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        area.setText(text);
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, area.getFont().getSize()));
+    }
+
+    private void initTextTransformRow(
+            JPanel panel,
+            GridBagConstraints c,
+            int row,
+            String label,
+            JCheckBox check,
+            JTextArea area) {
+        c.gridx = 0; c.gridy = row; c.gridwidth = 1; c.weightx = 0; c.weighty = 0;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(new JLabel(label), c);
+
+        check.setToolTipText("ON のとき、比較前に .txt を正規表現で置換します");
+        area.setToolTipText("""
+                1行1ルール（タブ区切り）: /正規表現/フラグ<TAB>置換後
+                または JS 風: .replace(/\\n\\t\\n/g, "\\t").replace(/\\t\\n+/, "\\t")
+                # で始まる行はコメント""");
+        JPanel rowPanel = new JPanel(new BorderLayout(8, 0));
+        rowPanel.add(check, BorderLayout.WEST);
+        rowPanel.add(new JScrollPane(area), BorderLayout.CENTER);
+
+        c.gridx = 1; c.gridwidth = 2; c.weightx = 1; c.weighty = 0.45;
+        c.fill = GridBagConstraints.BOTH;
+        panel.add(rowPanel, c);
+        c.gridwidth = 1;
+    }
+
+    private void updateTextTransformEnabled() {
+        boolean oldEnabled = oldTextTransformCheck.isSelected();
+        boolean newEnabled = newTextTransformCheck.isSelected();
+        oldTextTransformArea.setEnabled(oldEnabled);
+        newTextTransformArea.setEnabled(newEnabled);
+    }
+
+    private String loadTextTransformRules(Path file) {
+        if (!Files.exists(file)) {
+            writeTextTransformRules(file, DEFAULT_TEXT_TRANSFORM_RULES);
+            return DEFAULT_TEXT_TRANSFORM_RULES;
+        }
+        try {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+            return DEFAULT_TEXT_TRANSFORM_RULES;
+        }
+    }
+
+    private static void writeTextTransformRules(Path file, String text) {
+        try {
+            Files.writeString(file, text, StandardCharsets.UTF_8);
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void saveTextTransformRules() {
+        writeTextTransformRules(OLD_TEXT_TRANSFORM_FILE, oldTextTransformArea.getText());
+        writeTextTransformRules(NEW_TEXT_TRANSFORM_FILE, newTextTransformArea.getText());
+    }
+
+    private TextTransformUtil.TextTransformOptions buildOldTextTransform() {
+        try {
+            return TextTransformUtil.parse(oldTextTransformCheck.isSelected(), oldTextTransformArea.getText());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("旧テキスト変換: " + e.getMessage(), e);
+        }
+    }
+
+    private TextTransformUtil.TextTransformOptions buildNewTextTransform() {
+        try {
+            return TextTransformUtil.parse(newTextTransformCheck.isSelected(), newTextTransformArea.getText());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("新テキスト変換: " + e.getMessage(), e);
+        }
+    }
+
     private void linkSettingControls() {
         blockSizeSlider.addChangeListener(e -> blockSizeSpinner.setValue(blockSizeSlider.getValue()));
         blockSizeSpinner.addChangeListener(e -> blockSizeSlider.setValue((int) blockSizeSpinner.getValue()));
@@ -436,7 +562,9 @@ public class App extends JFrame {
             File oldDir,
             File newDir,
             File outDir,
-            boolean trimMargins) {}
+            boolean trimMargins,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) {}
 
     private record ComparisonStart(
             File oldDir,
@@ -448,7 +576,9 @@ public class App extends JFrame {
             int threshold,
             boolean trimMargins,
             int cropThreshold,
-            int cropAmount) {}
+            int cropAmount,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) {}
 
     @FunctionalInterface
     private interface ReportTask {
@@ -514,10 +644,21 @@ public class App extends JFrame {
         int blockSize = blockSizeSlider.getValue();
         int threshold = thresholdSlider.getValue();
         boolean trimMargins = trimMarginsCheck.isSelected();
+        TextTransformUtil.TextTransformOptions oldTextTransform;
+        TextTransformUtil.TextTransformOptions newTextTransform;
+        try {
+            oldTextTransform = buildOldTextTransform();
+            newTextTransform = buildNewTextTransform();
+        } catch (IllegalArgumentException e) {
+            showError(e.getMessage());
+            return null;
+        }
 
         log("パラメータ: ブロックサイズ=" + blockSize + ", しきい値=" + threshold
                 + ", サブフォルダ=" + (includeSubfolders ? "ON" : "OFF")
                 + ", 余白削除=" + (trimMargins ? "ON" : "OFF")
+                + ", 旧テキスト変換=" + (oldTextTransform.enabled() ? "ON" : "OFF")
+                + ", 新テキスト変換=" + (newTextTransform.enabled() ? "ON" : "OFF")
                 + ", 画像出力=" + (jpegFormatRadio.isSelected() ? "JPEG変換" : "PNG変換")
                 + ", HTML画像配置=" + (htmlExternalRadio.isSelected() ? "別フォルダ" : "HTML内")
                 + ", 先頭切り取り=" + (cropImageCheck.isSelected() ? "ON" : "OFF")
@@ -528,7 +669,7 @@ public class App extends JFrame {
 
         return new ComparisonStart(
                 oldDir, newDir, outDir, relativePaths, newRelativePaths, blockSize, threshold, trimMargins,
-                getCropThreshold(), getCropAmount());
+                getCropThreshold(), getCropAmount(), oldTextTransform, newTextTransform);
     }
 
     private boolean compareImages(
@@ -565,7 +706,9 @@ public class App extends JFrame {
                         unit.oldImagePaths(),
                         unit.newImagePaths(),
                         start.blockSize(),
-                        start.threshold());
+                        start.threshold(),
+                        start.oldTextTransform(),
+                        start.newTextTransform());
                 results.add(result);
                 String line = result.fileName() + " : 差分 " + String.format("%.2f%%", result.diffPercent());
                 if (result.textDiffLines() >= 0) {
@@ -689,7 +832,8 @@ public class App extends JFrame {
                     return ReportOutcome.finished(null);
                 }
                 ComparisonContext ctx = new ComparisonContext(
-                        results, start.oldDir(), start.newDir(), start.outDir(), start.trimMargins());
+                        results, start.oldDir(), start.newDir(), start.outDir(), start.trimMargins(),
+                        start.oldTextTransform(), start.newTextTransform());
                 try {
                     return ReportOutcome.finished(task.run(ctx, this::isCancelled));
                 } catch (InterruptedIOException e) {
@@ -785,6 +929,8 @@ public class App extends JFrame {
                     cropAmount,
                     ctx.trimMargins(),
                     imagePlacement,
+                    ctx.oldTextTransform(),
+                    ctx.newTextTransform(),
                     cancelled);
             log("HTML出力: " + htmlFile.getAbsolutePath()
                     + (imagePlacement == ReportGenerator.HtmlImagePlacement.INLINE
@@ -882,8 +1028,11 @@ public class App extends JFrame {
             }
             includeSubfoldersCheck.setSelected(Boolean.parseBoolean(props.getProperty("includeSubfolders", "false")));
             trimMarginsCheck.setSelected(Boolean.parseBoolean(props.getProperty("trimMargins", "false")));
+            oldTextTransformCheck.setSelected(Boolean.parseBoolean(props.getProperty("oldTextTransform", "false")));
+            newTextTransformCheck.setSelected(Boolean.parseBoolean(props.getProperty("newTextTransform", "false")));
             loadCropSettings(props);
             updateCropEnabled();
+            updateTextTransformEnabled();
             updateJpegQualityEnabled();
         } catch (IOException ignored) {}
     }
@@ -901,11 +1050,14 @@ public class App extends JFrame {
             props.setProperty("htmlImagePlacement", htmlExternalRadio.isSelected() ? "external" : "inline");
             props.setProperty("includeSubfolders", String.valueOf(includeSubfoldersCheck.isSelected()));
             props.setProperty("trimMargins", String.valueOf(trimMarginsCheck.isSelected()));
+            props.setProperty("oldTextTransform", String.valueOf(oldTextTransformCheck.isSelected()));
+            props.setProperty("newTextTransform", String.valueOf(newTextTransformCheck.isSelected()));
             props.setProperty("cropImage", String.valueOf(cropImageCheck.isSelected()));
             props.setProperty("cropThreshold", String.valueOf(cropThresholdSpinner.getValue()));
             props.setProperty("cropAmount", String.valueOf(cropAmountSpinner.getValue()));
             props.store(Files.newBufferedWriter(HISTORY_FILE), "Screen Diff History");
             saveImagePrompt();
+            saveTextTransformRules();
         } catch (IOException ignored) {}
     }
 

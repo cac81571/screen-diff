@@ -66,6 +66,8 @@ public class ReportGenerator {
             int cropAmount,
             boolean trimMargins,
             HtmlImagePlacement imagePlacement,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform,
             BooleanSupplier cancelled) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("""
@@ -629,7 +631,7 @@ public class ReportGenerator {
             appendCropNoteIfNeeded(sb, r.newCropped());
             sb.append("</div>")
               .append("</div>");
-            appendTextDiffAccordion(sb, idx, oldDir, newDir, r);
+            appendTextDiffAccordion(sb, idx, oldDir, newDir, r, oldTextTransform, newTextTransform);
             sb.append("</div>");
             idx++;
         }
@@ -913,9 +915,15 @@ public class ReportGenerator {
     }
 
     private static void appendTextDiffAccordion(
-            StringBuilder sb, int idx, File oldDir, File newDir, ImageComparator.Result r) throws IOException {
+            StringBuilder sb,
+            int idx,
+            File oldDir,
+            File newDir,
+            ImageComparator.Result r,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) throws IOException {
         TextComparator.TextDiffContent content = TextComparator.loadTextDiffContentForMembers(
-                oldDir, newDir, r.oldMemberPaths(), r.newMemberPaths());
+                oldDir, newDir, r.oldMemberPaths(), r.newMemberPaths(), oldTextTransform, newTextTransform);
         String expectedTextNames = formatExpectedTextNames(r);
         sb.append("<details class='text-diff' id='text-diff-").append(idx).append("'>");
         if (content.available()) {

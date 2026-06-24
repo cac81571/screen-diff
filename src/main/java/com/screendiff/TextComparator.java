@@ -44,8 +44,11 @@ public final class TextComparator {
             File oldDir,
             File newDir,
             List<String> oldImagePaths,
-            List<String> newImagePaths) throws IOException {
-        List<LineDiffRow> rows = diffMemberRows(oldDir, newDir, oldImagePaths, newImagePaths);
+            List<String> newImagePaths,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) throws IOException {
+        List<LineDiffRow> rows = diffMemberRows(
+                oldDir, newDir, oldImagePaths, newImagePaths, oldTextTransform, newTextTransform);
         if (rows == null) {
             return new TextResult(-1, false);
         }
@@ -56,8 +59,11 @@ public final class TextComparator {
             File oldDir,
             File newDir,
             List<String> oldImagePaths,
-            List<String> newImagePaths) throws IOException {
-        List<LineDiffRow> rows = diffMemberRows(oldDir, newDir, oldImagePaths, newImagePaths);
+            List<String> newImagePaths,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) throws IOException {
+        List<LineDiffRow> rows = diffMemberRows(
+                oldDir, newDir, oldImagePaths, newImagePaths, oldTextTransform, newTextTransform);
         if (rows == null) {
             return TextDiffContent.unavailable();
         }
@@ -68,7 +74,9 @@ public final class TextComparator {
             File oldDir,
             File newDir,
             List<String> oldImagePaths,
-            List<String> newImagePaths) throws IOException {
+            List<String> newImagePaths,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) throws IOException {
         int pairCount = Math.min(oldImagePaths.size(), newImagePaths.size());
         if (pairCount == 0) {
             return null;
@@ -83,7 +91,9 @@ public final class TextComparator {
                 continue;
             }
             anyAvailable = true;
-            merged.addAll(diffLines(readLines(oldTxt), readLines(newTxt)));
+            merged.addAll(diffLines(
+                    readTransformedLines(oldTxt, oldTextTransform),
+                    readTransformedLines(newTxt, newTextTransform)));
         }
         return anyAvailable ? merged : null;
     }
@@ -120,8 +130,13 @@ public final class TextComparator {
         };
     }
 
-    private static List<String> readLines(Path path) throws IOException {
-        return Files.readAllLines(path, StandardCharsets.UTF_8);
+    private static List<String> readTransformedLines(
+            Path path, TextTransformUtil.TextTransformOptions transform) throws IOException {
+        String body = TextTransformUtil.loadTextForComparison(path, transform);
+        if (body.isEmpty()) {
+            return List.of();
+        }
+        return List.of(body.split("\n"));
     }
 
     static Path textPath(File dir, String textBaseName) {

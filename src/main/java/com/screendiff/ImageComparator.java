@@ -53,7 +53,9 @@ public class ImageComparator {
             List<String> oldMemberPaths,
             List<String> newMemberPaths,
             int blockSize,
-            int threshold) throws IOException {
+            int threshold,
+            TextTransformUtil.TextTransformOptions oldTextTransform,
+            TextTransformUtil.TextTransformOptions newTextTransform) throws IOException {
         BufferedImage img1 = ImageScaleUtil.limitForComparison(oldImage);
         BufferedImage img2 = ImageScaleUtil.limitForComparison(newImage);
 
@@ -70,7 +72,7 @@ public class ImageComparator {
         BufferedImage diffOverlay = createDiffOverlay(rectangles, w, h);
         double diffPercent = diffPercentFromRectangles(rectangles, w, h);
         TextComparator.TextResult textResult = TextComparator.compareMembers(
-                oldRoot, newRoot, oldMemberPaths, newMemberPaths);
+                oldRoot, newRoot, oldMemberPaths, newMemberPaths, oldTextTransform, newTextTransform);
 
         return new Result(
                 displayName,
