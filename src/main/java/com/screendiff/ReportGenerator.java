@@ -13,6 +13,7 @@ import java.nio.file.*;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
@@ -952,14 +953,11 @@ public class ReportGenerator {
         if (pairCount == 0) {
             return "—";
         }
-        StringBuilder names = new StringBuilder();
+        LinkedHashSet<String> names = new LinkedHashSet<>();
         for (int i = 0; i < pairCount; i++) {
-            if (i > 0) {
-                names.append(", ");
-            }
-            names.append(ImageTextGroupUtil.textBaseNameForImage(r.oldMemberPaths().get(i))).append(".txt");
+            names.add(ImageTextGroupUtil.textBaseNameForImage(r.oldMemberPaths().get(i)) + ".txt");
         }
-        return names.toString();
+        return String.join(", ", names);
     }
 
     /** HTML 用: 一致行は省略し、差分行のみ表示する（ブロック間は省略サマリ行を挿入） */

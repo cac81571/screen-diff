@@ -10,7 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /** 画像ファイル名（拡張子 .txt）に対応するテキストを比較する（java-diff-utils 使用）。 */
 public final class TextComparator {
@@ -83,10 +85,14 @@ public final class TextComparator {
         }
 
         List<LineDiffRow> merged = new ArrayList<>();
+        Set<String> seenTextPairs = new LinkedHashSet<>();
         boolean anyAvailable = false;
         for (int i = 0; i < pairCount; i++) {
             Path oldTxt = textPath(oldDir, ImageTextGroupUtil.textBaseNameForImage(oldImagePaths.get(i)));
             Path newTxt = textPath(newDir, ImageTextGroupUtil.textBaseNameForImage(newImagePaths.get(i)));
+            if (!seenTextPairs.add(oldTxt + "\0" + newTxt)) {
+                continue;
+            }
             if (!Files.isRegularFile(oldTxt) || !Files.isRegularFile(newTxt)) {
                 continue;
             }
